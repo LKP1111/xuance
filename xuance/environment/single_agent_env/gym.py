@@ -114,6 +114,7 @@ class Atari_Env(gym.Wrapper):
         self.lifes = self.env.unwrapped.ale.lives()
         self.was_real_done = True
         self.grayscale, self.rgb = False, False
+        self.sign_reward = False
         if self.obs_type == "rgb":
             self.rgb = True
             self.observation_space = gym.spaces.Box(
@@ -196,7 +197,7 @@ class Atari_Env(gym.Wrapper):
             return frame
 
     def reward(self, reward):
-        return np.sign(reward)
+        return np.sign(reward) if self.sign_reward else reward
 
 
 class LazyFrames(object):
