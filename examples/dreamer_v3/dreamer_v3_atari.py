@@ -12,6 +12,7 @@ def parse_args():
     parser.add_argument("--log-dir", type=str, default="./logs/Breakout-v5/")
     parser.add_argument("--model-dir", type=str, default="./models/Breakout-v5/")
     parser.add_argument("--device", type=str, default="cuda:2")
+    parser.add_argument("--harmony", type=bool, default=True)
 
     # atari50m, ratio=0.0625, gradient_step=3125k
     parser.add_argument("--running-steps", type=int, default=50_000_000)  # 50m
