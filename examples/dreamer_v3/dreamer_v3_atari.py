@@ -11,15 +11,21 @@ def parse_args():
     parser.add_argument("--env-id", type=str, default="ALE/Breakout-v5")
     parser.add_argument("--log-dir", type=str, default="./logs/Breakout-v5/")
     parser.add_argument("--model-dir", type=str, default="./models/Breakout-v5/")
-    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--device", type=str, default="cuda:2")
+
+    # atari50m, ratio=0.0625, gradient_step=3125k
+    parser.add_argument("--running-steps", type=int, default=50_000_000)  # 50m
+    parser.add_argument("--eval-interval", type=int, default=10_000)  # 5k logs
+    parser.add_argument("--replay-ratio", type=int, default=0.0625)
 
     # atari100k, ratio=1, gradient_step=100k
-    parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
-    parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
-    parser.add_argument("--replay-ratio", type=int, default=1)
+    # parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
+    # parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
+    # parser.add_argument("--replay-ratio", type=int, default=1)
 
     # parallels & benchmark
-    parser.add_argument('--parallels', type=int, default=1)
+    parser.add_argument('--buffer_size', type=int, default=4_000_000)  # 4e6
+    parser.add_argument('--parallels', type=int, default=4)
     parser.add_argument("--test", type=int, default=0)
     parser.add_argument("--benchmark", type=int, default=1)
     return parser.parse_args()
@@ -28,7 +34,7 @@ def parse_args():
 if __name__ == '__main__':
     # print(sys.path)  # python path
     parser = parse_args()
-    configs_dict = get_configs(file_dir="config/atari.yaml")
+    configs_dict = get_configs(file_dir="config/atari_xl.yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
     configs = argparse.Namespace(**configs_dict)
 

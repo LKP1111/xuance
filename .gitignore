@@ -29,3 +29,5 @@ mnist.npz
 
 *-checkpoint.ipynb
 /.ipynb_checkpoints
+
+out*.log
