@@ -9,6 +9,12 @@ REGISTRY_ENV: Optional[EnvironmentDict] = {
 }
 
 try:
+    from xuance.environment.single_agent_env.robodesk import RoboDesk
+    REGISTRY_ENV['Robodesk'] = RoboDesk
+except Exception as error:
+    REGISTRY_ENV["Robodesk"] = str(error)
+
+try:
     from xuance.environment.single_agent_env.atari import Atari_Env
     REGISTRY_ENV['Atari'] = Atari_Env
 except Exception as error:
