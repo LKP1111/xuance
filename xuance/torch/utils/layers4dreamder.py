@@ -633,6 +633,42 @@ class LayerNormGRUCell(nn.Module):
         return hx
 
 
+class BlockLinear(nn.Module):
+    def __init__(self, 
+                 input_size: int, 
+                 output_size: int, 
+                 blocks: int, 
+                 bias: bool=True, 
+                 outscale: float=1.0
+        ) -> None:
+        super().__init__()
+        assert input_size % blocks == 0 and output_size % blocks == 0
+        self.blocks = blocks
+        self.in_blocks = input_size // blocks
+        self.out_blocks = output_size // blocks
+        self.outscale = outscale
+        self.bias_flag = bias
+        self.weight = nn.Parameter(
+            torch.randn(blocks, self.in_blocks, self.out_blocks) * outscale
+        )
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(output_size))
+        else:
+            self.register_parameter('bias', None)
+
+    def forward(self, x):
+        # x.shape: (B=batch, ~)
+        B = x.shape[0]
+        x = x.view(B, self.blocks, self.in_blocks)  # (B, blocks, in_blocks)
+        # block-wise matmul
+        # x: (B, [k], i), weight: ([k], i, o) -> (B, [k], o)
+        x = torch.einsum('bki,kio->bko', x, self.weight)
+        x = x.reshape(B, -1)  # (B, output_size)
+        if self.bias is not None:
+            x = x + self.bias
+        return x
+
+
 class MultiEncoder(nn.Module):
     def __init__(
         self,

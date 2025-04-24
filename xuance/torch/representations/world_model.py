@@ -23,6 +23,7 @@ from xuance.torch.utils.layers4dreamder import (
     LayerNorm,
     LayerNormChannelLast,
     LayerNormGRUCell,
+    BlockLinear,
     MultiDecoder,
     MultiEncoder,
     ModuleType,
@@ -261,14 +262,17 @@ class MLPDecoder(nn.Module):
 
 class RecurrentModel(nn.Module):
     """Recurrent model for the model-base Dreamer-V3 agent.
-    This implementation uses the `models.LayerNormGRUCell`, which combines
-    the standard GRUCell from PyTorch with the `nn.LayerNorm`, where the normalization is applied
-    right after having computed the projection from the input to the weight space.
+    This implementation uses the `models.BlockLinear`, 
+    which enables the sequence model to be a GRU with block-diagonal recurrent weights of 8 blocks,
+    to allow for a large number of memory units without quadratic increase in parameters and FLOPs
 
     Args:
-        input_size (int): the input size of the model.
-        dense_units (int): the number of dense units.
-        recurrent_state_size (int): the size of the recurrent state.
+        deter_size (int): the size of the recurrent state.
+        stoch_size (int): the size of the stochastic state.
+        action_size (int): the size of the action.
+        hidden_size (int): the number of dense units.
+        block_size (int): the number of blocks.
+        dyn_layer (int): the number of dyn_layer (block mlp).
         activation_fn (nn.Module): the activation function.
             Default to SiLU.
         layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
@@ -276,50 +280,90 @@ class RecurrentModel(nn.Module):
         layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
             Default to {"eps": 1e-3}.
     """
-
+    
     def __init__(
             self,
-            input_size: int,
-            recurrent_state_size: int,
-            dense_units: int,
+            deter_size: int,
+            stoch_size: int,
+            action_size: int,
+            hidden_size: int,  # related to config.dense_units
+            block_size: int=8,
+            dyn_layer: int=1, 
             activation_fn: nn.Module = nn.SiLU,
             layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
             layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
     ) -> None:
         super().__init__()
-        self.mlp = MLP(
-            input_dims=input_size,
-            output_dim=None,
-            hidden_sizes=[dense_units],
-            activation=activation_fn,
-            layer_args={"bias": layer_norm_cls == nn.Identity},
-            norm_layer=[layer_norm_cls],
-            norm_args=[{**layer_norm_kw, "normalized_shape": dense_units}],
-        )
-        self.rnn = LayerNormGRUCell(
-            dense_units,
-            recurrent_state_size,
-            bias=False,
-            batch_first=False,
-            layer_norm_cls=layer_norm_cls,
-            layer_norm_kw=layer_norm_kw,
-        )
-        self.recurrent_state_size = recurrent_state_size
+        self.g = block_size
+        self.hidden_size = hidden_size
+        self.deter_size = self.recurrent_state_size = deter_size
+        self.stoch_size = stoch_size
+        self.action_size = action_size
+        self.dyn_layer = dyn_layer
+        # 3 linear
+        self.linear1 = nn.Linear(self.deter_size, self.hidden_size)
+        self.linear2 = nn.Linear(self.stoch_size, self.hidden_size)
+        self.linear3 = nn.Linear(self.action_size, self.hidden_size)
+        self.norm1 = layer_norm_cls(self.hidden_size, **layer_norm_kw)
+        self.norm2 = layer_norm_cls(self.hidden_size, **layer_norm_kw)
+        self.norm3 = layer_norm_cls(self.hidden_size, **layer_norm_kw)
+        self.activation_fn = activation_fn()
+        # block mlp
+        self.dyn_li = nn.ModuleList()
+        self.norm_li = nn.ModuleList()
+        # in: g * hidden * 3 + deter; out: self.deter_size * 3
+        in_dim = self.g * self.hidden_size * 3 + self.deter_size
+        out_dim = self.deter_size * 3
+        for _ in range(self.dyn_layer):
+            self.dyn_li.append(BlockLinear(in_dim, self.deter_size, self.g, bias=False))
+            self.norm_li.append(layer_norm_cls(self.deter_size, **layer_norm_kw))
+            in_dim = self.deter_size
+        self.dyn_out = BlockLinear(self.deter_size, out_dim, self.g, bias=False)
+        
 
-    def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
+    def forward(self, deter: Tensor, stoch: Tensor, action: Tensor) -> Tensor:
         """
         Compute the next recurrent state from the latent state (stochastic and recurrent states) and the actions.
 
         Args:
-            input (Tensor): the input tensor composed by the stochastic state and the actions concatenated together.
-            recurrent_state (Tensor): the previous recurrent state.
+            deter (Tensor): the previous recurrent state.
+            stoch (Tensor): the previous stochastic state.
+            action (Tensor): action
 
         Returns:
             the computed recurrent output and recurrent state.
         """
-        feat = self.mlp(input)
-        out = self.rnn(feat, recurrent_state)
-        return out
+        # seq_batch2batch
+        origin_shape = deter.shape[:-1]
+        B = np.prod(origin_shape)
+        deter = deter.view(B, -1)
+        stoch = stoch.view(B, -1)
+        action = action.view(B, -1)
+        action /= torch.max(torch.as_tensor(1.0), torch.abs(action)).detach()
+        g = self.g
+        hidden_size = self.hidden_size
+        x1 = self.activation_fn(self.norm1(self.linear1(deter)))
+        x2 = self.activation_fn(self.norm2(self.linear2(stoch)))
+        x3 = self.activation_fn(self.norm3(self.linear3(action)))
+        
+        # -> [B, g, hidden * 3]
+        x = torch.cat([x1, x2, x3], -1).unsqueeze(1).expand(-1, g, hidden_size * 3)
+        # -> [B, g, hidden * 3 + deter // g]
+        x = torch.cat([x, deter.view(B, g, -1)], -1)
+        # -> [B, g * hidden * 3 + deter]
+        x = x.view(B, -1)
+        # -> [B, deter * 3]
+        for i in range(self.dyn_layer):
+            x = self.dyn_li[i](x)
+            x = self.norm_li[i](x)
+        x = self.dyn_out(x)
+
+        reset, cand, update = [y.reshape(B, -1) for y in torch.chunk(x.view(B, g, -1), 3, -1)]
+        reset = torch.sigmoid(reset)
+        cand = torch.tanh(reset * cand)
+        update = torch.sigmoid(update - 1)
+        next_deter = update * cand + (1 - update) * deter
+        return next_deter.view(*origin_shape, -1)
 
 
 class RSSM(nn.Module):
@@ -410,7 +454,7 @@ class RSSM(nn.Module):
         posterior = posterior.view(*posterior.shape[:-2], -1)
         posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
 
-        recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
+        recurrent_state = self.recurrent_model(recurrent_state, posterior, action)
         prior_logits, prior = self._transition(recurrent_state)
         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
         return recurrent_state, posterior, prior, posterior_logits, prior_logits
@@ -474,7 +518,7 @@ class RSSM(nn.Module):
             The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
             The recurrent state (Tensor).
         """
-        recurrent_state = self.recurrent_model(torch.cat((prior, actions), -1), recurrent_state)
+        recurrent_state = self.recurrent_model(recurrent_state, prior, actions)
         _, imagined_prior = self._transition(recurrent_state)
         return imagined_prior, recurrent_state
 
@@ -723,7 +767,7 @@ class PlayerDV3(nn.Module):
         """
         embedded_obs = self.encoder(obs)
         self.recurrent_state = self.rssm.recurrent_model(  # -> h1: [1: batch, 4: envs, 512]
-            torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
+            self.recurrent_state, self.stochastic_state, self.actions
         )
         _, self.stochastic_state = self.rssm._representation(self.recurrent_state, embedded_obs)
         self.stochastic_state = self.stochastic_state.view(
@@ -848,19 +892,23 @@ class DreamerV3WorldModel(nn.Module):
         encoder = MultiEncoder(cnn_encoder, mlp_encoder).to(config.device)
 
         recurrent_model = RecurrentModel(
-            input_size=int(sum(actions_dim) + stochastic_size),
-            recurrent_state_size=world_model_config.recurrent_model.recurrent_state_size,
-            dense_units=world_model_config.recurrent_model.dense_units,
+            deter_size=recurrent_state_size,
+            stoch_size=stochastic_size,
+            action_size=int(sum(actions_dim)),
+            hidden_size=world_model_config.recurrent_model.dense_units,
+            block_size=world_model_config.recurrent_model.block_size,
+            dyn_layer=world_model_config.recurrent_model.dyn_layer, 
             layer_norm_cls=LayerNorm,
             layer_norm_kw=world_model_config.recurrent_model.layer_norm.kw,
         )
+        # recurrent_model(torch.zeros(16, 512), torch.zeros(16, 512), torch.zeros(16, 4))  # test
         represention_model_input_size = encoder.output_dim
         represention_model_input_size += recurrent_state_size
         representation_ln_cls = LayerNorm
         representation_model = MLP(
             input_dims=represention_model_input_size,  # (h1, x1) -> z1
             output_dim=stochastic_size,
-            hidden_sizes=[world_model_config.representation_model.hidden_size],
+            hidden_sizes=[world_model_config.representation_model.hidden_size],  # post: obslayers: 1
             activation=nn.SiLU,
             layer_args={"bias": representation_ln_cls == nn.Identity},
             flatten_dim=None,
@@ -876,17 +924,17 @@ class DreamerV3WorldModel(nn.Module):
         transition_model = MLP(
             input_dims=recurrent_state_size,
             output_dim=stochastic_size,
-            hidden_sizes=[world_model_config.transition_model.hidden_size],
+            hidden_sizes=[world_model_config.transition_model.hidden_size]*2,  # prior: imglayers: 2
             activation=nn.SiLU,
             layer_args={"bias": transition_ln_cls == nn.Identity},
             flatten_dim=None,
-            norm_layer=[transition_ln_cls],
+            norm_layer=[transition_ln_cls]*2,
             norm_args=[
                 {
                     **world_model_config.transition_model.layer_norm.kw,
                     "normalized_shape": world_model_config.transition_model.hidden_size,
                 }
-            ],
+            ]*2,
         )
 
         rssm_cls = RSSM

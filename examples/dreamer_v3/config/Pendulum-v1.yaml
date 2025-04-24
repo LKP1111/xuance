@@ -20,7 +20,7 @@ learner: "DreamerV3_Learner"
 policy: "DreamerV3Policy"
 runner: "DRL"
 
-# world_model & actor_critic start
+# world_model & actor_critic start (12m config)
 harmony: False
 
 distribution:
@@ -36,11 +36,11 @@ actor:
   min_std: 0.1
   max_std: 1.0
   init_std: 2.0
-  mlp_layers: 2
+  mlp_layers: 3
   layer_norm:
     kw:
       eps: 0.001
-  dense_units: 512
+  dense_units: 256
   clip_gradients: 100.0
   unimix: 0.01
   action_clip: 1.0
@@ -51,17 +51,17 @@ actor:
       low: 0.05
       high: 0.95
 critic:
-  mlp_layers: 2
+  mlp_layers: 3
   layer_norm:
     kw:
       eps: 0.001
-  dense_units: 512
+  dense_units: 256
   soft_update_freq: 1
   tau: 0.02
   bins: 255
   clip_gradients: 100.0
 world_model:
-  discrete_size: 32
+  discrete_size: 16
   stochastic_size: 32
   kl_dynamic: 0.5
   kl_representation: 0.1
@@ -71,55 +71,57 @@ world_model:
   clip_gradients: 1000.0
   learnable_initial_recurrent_state: true
   encoder:
-    cnn_channels_multiplier: 32
-    mlp_layers: 2
+    cnn_channels_multiplier: 16
+    mlp_layers: 3
     cnn_layer_norm:
       kw:
         eps: 0.001
     mlp_layer_norm:
       kw:
         eps: 0.001
-    dense_units: 512
+    dense_units: 256
   recurrent_model:
+    block_size: 8
+    dyn_layer: 1
     recurrent_state_size: 512
     layer_norm:
       kw:
         eps: 0.001
-    dense_units: 512
+    dense_units: 256
   transition_model:
-    hidden_size: 512
+    hidden_size: 256
     layer_norm:
       kw:
         eps: 0.001
   representation_model:
-    hidden_size: 512
+    hidden_size: 256
     layer_norm:
       kw:
         eps: 0.001
   observation_model:
-    cnn_channels_multiplier: 32
-    mlp_layers: 2
+    cnn_channels_multiplier: 16
+    mlp_layers: 3
     cnn_layer_norm:
       kw:
         eps: 0.001
     mlp_layer_norm:
       kw:
         eps: 0.001
-    dense_units: 512
+    dense_units: 256
   reward_model:
-    mlp_layers: 2
+    mlp_layers: 1
     layer_norm:
       kw:
         eps: 0.001
-    dense_units: 512
+    dense_units: 256
     bins: 255
   discount_model:
     learnable: true
-    mlp_layers: 2
+    mlp_layers: 1
     layer_norm:
       kw:
         eps: 0.001
-    dense_units: 512
+    dense_units: 256
 
 gamma: 0.996996996996997
 lmbda: 0.95
@@ -135,10 +137,10 @@ buffer_size: 1000000  # 1e6
 batch_size: 16
 seq_len: 64
 learning_rate_model: 0.0001  # 1e-4
-learning_rate_actor: 0.00008  # 8e-5
-learning_rate_critic: 0.00008  # 8e-5
+learning_rate_actor: 0.00003  # 3e-5
+learning_rate_critic: 0.00003  # 3e-5
 
-replay_ratio: 1  # gradient_step / replay_step
+replay_ratio: 0.5  # gradient_step / replay_step
 running_steps: 10000  # 10k
 start_training: 1024
 

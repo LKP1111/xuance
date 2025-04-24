@@ -11,13 +11,13 @@ def parse_args():
     parser.add_argument("--env-id", type=str, default="ALE/Breakout-v5")
     parser.add_argument("--log-dir", type=str, default="./logs/Breakout-v5/")
     parser.add_argument("--model-dir", type=str, default="./models/Breakout-v5/")
-    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--device", type=str, default="cuda:1")
     parser.add_argument("--harmony", type=bool, default=True)
 
-    # atari100k, ratio=1, gradient_step=100k
+    # atari100k, ratio=0.25, gradient_step=25k
     parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
     parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
-    parser.add_argument("--replay-ratio", type=int, default=1)
+    parser.add_argument("--replay-ratio", type=int, default=0.25)
 
     # parallels & benchmark
     parser.add_argument('--parallels', type=int, default=1)
