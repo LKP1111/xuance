@@ -30,6 +30,7 @@ pixel: False
 env_config:
   screen_size: 64
 activation: 'silu'
+norm: 'rms'
 
 actor:
   ent_coef: 0.0003
@@ -37,9 +38,6 @@ actor:
   max_std: 1.0
   init_std: 2.0
   mlp_layers: 3
-  layer_norm:
-    kw:
-      eps: 0.001
   dense_units: 256
   clip_gradients: 100.0
   unimix: 0.01
@@ -52,9 +50,6 @@ actor:
       high: 0.95
 critic:
   mlp_layers: 3
-  layer_norm:
-    kw:
-      eps: 0.001
   dense_units: 256
   soft_update_freq: 1
   tau: 0.02
@@ -73,54 +68,27 @@ world_model:
   encoder:
     cnn_channels_multiplier: 16
     mlp_layers: 3
-    cnn_layer_norm:
-      kw:
-        eps: 0.001
-    mlp_layer_norm:
-      kw:
-        eps: 0.001
     dense_units: 256
   recurrent_model:
     block_size: 8
     dyn_layer: 1
     recurrent_state_size: 512
-    layer_norm:
-      kw:
-        eps: 0.001
     dense_units: 256
   transition_model:
     hidden_size: 256
-    layer_norm:
-      kw:
-        eps: 0.001
   representation_model:
     hidden_size: 256
-    layer_norm:
-      kw:
-        eps: 0.001
   observation_model:
     cnn_channels_multiplier: 16
     mlp_layers: 3
-    cnn_layer_norm:
-      kw:
-        eps: 0.001
-    mlp_layer_norm:
-      kw:
-        eps: 0.001
     dense_units: 256
   reward_model:
     mlp_layers: 1
-    layer_norm:
-      kw:
-        eps: 0.001
     dense_units: 256
     bins: 255
   discount_model:
     learnable: true
     mlp_layers: 1
-    layer_norm:
-      kw:
-        eps: 0.001
     dense_units: 256
 
 gamma: 0.996996996996997
@@ -128,7 +96,7 @@ lmbda: 0.95
 horizon: 15
 
 unimix: 0.01
-hafner_initialization: True
+trunc_normal_init: True
 # world_model & actor_critic end
 
 seed: 1

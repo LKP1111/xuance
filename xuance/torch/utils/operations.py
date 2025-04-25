@@ -185,6 +185,23 @@ def uniform_init_weights(given_scale):
 
     return f
 
+# ref: https://github.com/danijar/dreamerv3/blob/main/embodied/jax/nets.py#L144
+def trunc_normal_init_weights(fan_mode='fan_in', scale=1.0):
+    def f(param):
+        # trunc_normal_init for all weights and zero_init for all bias
+        fan_in, fan_out = nn.init._calculate_fan_in_and_fan_out(param)
+        fan = {
+            'fan_in': fan_in,
+            'fan_out': fan_out,
+            'avg': (fan_in + fan_out) / 2,
+            'none': 1
+        }[fan_mode]
+        std = 1.1368 * (scale / fan) ** 0.5
+        nn.init.trunc_normal_(param, mean=0.0, std=std, a=-2*std, b=2*std)
+        if hasattr(param.bias, "data"):
+            param.bias.data.fill_(0.0)
+    return f
+
 
 def sym_log(x: Tensor) -> Tensor:
     """Computes the symmetric logarithm of a tensor.

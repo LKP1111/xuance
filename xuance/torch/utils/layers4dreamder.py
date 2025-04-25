@@ -5,7 +5,7 @@ Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor, Size, nn
 
 ModuleType = Optional[Type[nn.Module]]
 ArgType = Union[Tuple[Any, ...], Dict[Any, Any], None]
@@ -633,6 +633,7 @@ class LayerNormGRUCell(nn.Module):
         return hx
 
 
+# ref: https://github.com/danijar/dreamerv3/blob/main/embodied/jax/nets.py#L254
 class BlockLinear(nn.Module):
     def __init__(self, 
                  input_size: int, 
@@ -785,4 +786,37 @@ class LayerNorm(nn.LayerNorm):
         return out.to(input_dtype)
 
 
+# ref: https://github.com/danijar/dreamerv3/blob/main/embodied/jax/nets.py#L361
+class RMSNorm(nn.Module):
+    def __init__(self, normalized_shape: Union[int, List[int], Size], eps: float = 1e-4, scale: bool = True):
+        super().__init__()
+        self.eps = eps
+        self.scale = scale  # related to torch elementwise_affine
+        self.normalized_shape = normalized_shape  # last dim size
+        if self.scale:
+            self.weight = nn.Parameter(torch.empty(self.normalized_shape))
+        else:
+            self.register_parameter('weight', None)
+        
+    def forward(self, x):
+        dtype = x.dtype
+        x = x.float()
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()  # norm last dim
+        x = x / rms
+        if self.scale:
+            x *= self.weight
+        return x.to(dtype)
 
+
+class RMSNormChannelLast(RMSNorm):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() != 4:
+            raise ValueError(f"Input tensor must be 4D (NCHW), received {len(x.shape)}D instead: {x.shape}")
+        input_dtype = x.dtype
+        x = x.permute(0, 2, 3, 1)
+        x = super().forward(x)
+        x = x.permute(0, 3, 1, 2)
+        return x.to(input_dtype)

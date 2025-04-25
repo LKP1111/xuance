@@ -8,11 +8,11 @@ from xuance.torch.agents import DreamerV3Agent
 
 def parse_args():
     parser = argparse.ArgumentParser("Example of XuanCe: DreamerV3 for Atari.")
-    parser.add_argument("--env-id", type=str, default="ALE/Breakout-v5")
-    parser.add_argument("--log-dir", type=str, default="./logs/Breakout-v5/")
-    parser.add_argument("--model-dir", type=str, default="./models/Breakout-v5/")
+    parser.add_argument("--env-id", type=str, default="ALE/Pong-v5")
+    parser.add_argument("--log-dir", type=str, default="./logs/Pong-v5/")
+    parser.add_argument("--model-dir", type=str, default="./models/Pong-v5/")
     parser.add_argument("--device", type=str, default="cuda:1")
-    parser.add_argument("--harmony", type=bool, default=True)
+    parser.add_argument("--harmony", type=bool, default=False)
 
     # atari100k, ratio=0.25, gradient_step=25k
     parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
@@ -28,6 +28,9 @@ def parse_args():
 
 if __name__ == '__main__':
     # print(sys.path)  # python path
+    import sys
+    sys.path.append('/home/lkp/projects/xc_official')
+    
     parser = parse_args()
     configs_dict = get_configs(file_dir="config/atari.yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)

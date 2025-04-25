@@ -26,15 +26,24 @@ from xuance.torch.utils.layers4dreamder import (
     BlockLinear,
     MultiDecoder,
     MultiEncoder,
-    ModuleType,
+    RMSNormChannelLast,
+    RMSNorm,
     cnn_forward
 )
-from xuance.torch.utils import sym_log, dotdict, init_weights, uniform_init_weights, compute_stochastic_state
+from xuance.torch.utils import (
+    ModuleType,
+    sym_log, 
+    dotdict, 
+    init_weights, 
+    uniform_init_weights, 
+    compute_stochastic_state, 
+)
+from xuance.torch.utils.operations import trunc_normal_init_weights
 
 
 class CNNEncoder(nn.Module):
     """The Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
-    kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.LayerNorm`
+    kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.Norm`
     is used after the convolution. This 4-stages model assumes that the image
     is a 64x64 and it ends with a resolution of 4x4. If more than one image is to be encoded, then those will
     be concatenated on the channel dimension and fed to the encoder.
@@ -44,10 +53,8 @@ class CNNEncoder(nn.Module):
         image_size (Tuple[int, int]): the image size as (Height,Width).
         channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
             will be [1, 2, 4, 8] * `channels_multiplier`.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormChannelLast.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
+        norm_cls (Callable[..., nn.Module]): the norm to apply after the input projection.
+            Defaults to RMSNorm.
         activation (ModuleType, optional): the activation function.
             Defaults to nn.SiLU.
         stages (int, optional): how many stages for the CNN.
@@ -58,8 +65,7 @@ class CNNEncoder(nn.Module):
             input_channels: Sequence[int],
             image_size: Tuple[int, int],
             channels_multiplier: int,
-            layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
-            layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
+            norm_cls: Callable[..., nn.Module] = RMSNormChannelLast,
             activation: ModuleType = nn.SiLU,
             stages: int = 4,
     ) -> None:
@@ -70,11 +76,11 @@ class CNNEncoder(nn.Module):
                 input_channels=self.input_dim[0],
                 hidden_channels=(torch.tensor([2 ** i for i in range(stages)]) * channels_multiplier).tolist(),
                 cnn_layer=nn.Conv2d,
-                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity},
+                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": True},
                 activation=activation,
-                norm_layer=[layer_norm_cls] * stages,
+                norm_layer=[norm_cls] * stages,
                 norm_args=[
-                    {**layer_norm_kw, "normalized_shape": (2 ** i) * channels_multiplier} for i in range(stages)
+                    {"normalized_shape": (2 ** i) * channels_multiplier} for i in range(stages)
                 ],
             ),
             nn.Flatten(-3, -1),
@@ -90,7 +96,7 @@ class CNNDecoder(nn.Module):
     """The exact inverse of the `CNNEncoder` class. It assumes an initial resolution
     of 4x4, and in 4 stages reconstructs the observation image to 64x64. If multiple
     images are to be reconstructed, then it will create a dictionary with an entry
-    for every reconstructed image. No bias is used if a `nn.LayerNorm` is used after
+    for every reconstructed image. No bias is used if a `nn.Norm` is used after
     the `nn.Conv2dTranspose` layer.
 
     Args:
@@ -104,9 +110,8 @@ class CNNDecoder(nn.Module):
         image_size (Tuple[int, int]): the final image size.
         activation (nn.Module, optional): the activation function.
             Defaults to nn.SiLU.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormChannelLast.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
+        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to NormChannelLast.
             Default to {"eps": 1e-3}.
         stages (int): how many stages in the CNN decoder.
     """
@@ -119,8 +124,7 @@ class CNNDecoder(nn.Module):
             cnn_encoder_output_dim: int,
             image_size: Tuple[int, int],
             activation: nn.Module = nn.SiLU,
-            layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
-            layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
+            norm_cls: Callable[..., nn.Module] = RMSNormChannelLast,
             stages: int = 4,
     ) -> None:
         super().__init__()
@@ -140,14 +144,14 @@ class CNNDecoder(nn.Module):
                                 + [self.output_dim[0]],
                 cnn_layer=nn.ConvTranspose2d,
                 layer_args=[
-                               {"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity}
+                               {"kernel_size": 4, "stride": 2, "padding": 1, "bias": True}
                                for _ in range(stages - 1)
                            ]
                            + [{"kernel_size": 4, "stride": 2, "padding": 1}],
                 activation=[activation for _ in range(stages - 1)] + [None],
-                norm_layer=[layer_norm_cls for _ in range(stages - 1)] + [None],
+                norm_layer=[norm_cls for _ in range(stages - 1)] + [None],
                 norm_args=[
-                              {**layer_norm_kw, "normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
+                              {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
                               for i in range(stages - 1)
                           ]
                           + [None],
@@ -161,7 +165,7 @@ class CNNDecoder(nn.Module):
 
 class MLPEncoder(nn.Module):
     """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
+    N is specified by `mlp_layers`. No bias is used if a `nn.Norm` is used after the linear layer.
     If more than one vector is to be encoded, then those will concatenated on the last
     dimension before being fed to the encoder.
 
@@ -171,10 +175,8 @@ class MLPEncoder(nn.Module):
             Defaults to 4.
         dense_units (int, optional): the dimension of every mlp.
             Defaults to 512.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNorm.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
+        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to Norm.
         activation (ModuleType, optional): the activation function after every layer.
             Defaults to nn.SiLU.
         sym_log_inputs (bool, optional): whether to squash the input with the sym_log function.
@@ -186,8 +188,7 @@ class MLPEncoder(nn.Module):
             input_dims: Sequence[int],
             mlp_layers: int = 4,
             dense_units: int = 512,
-            layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
-            layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
+            norm_cls: Callable[..., nn.Module] = RMSNorm,
             activation: ModuleType = nn.SiLU,
             sym_log_inputs: bool = True,
     ) -> None:
@@ -198,9 +199,9 @@ class MLPEncoder(nn.Module):
             None,
             [dense_units] * mlp_layers,
             activation=activation,
-            layer_args={"bias": layer_norm_cls == nn.Identity},
-            norm_layer=layer_norm_cls,
-            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
+            layer_args={"bias": True},
+            norm_layer=norm_cls,
+            norm_args={"normalized_shape": dense_units},
         )
         self.output_dim = dense_units
         self.sym_log_inputs = sym_log_inputs  # True
@@ -212,7 +213,7 @@ class MLPEncoder(nn.Module):
 
 class MLPDecoder(nn.Module):
     """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
+    N is specified by `mlp_layers`. No bias is used if a `nn.Norm` is used after the linear layer.
     If more than one vector is to be decoded, then it will create a dictionary with an entry
     for every reconstructed vector.
 
@@ -224,10 +225,8 @@ class MLPDecoder(nn.Module):
             Defaults to 4.
         dense_units (int, optional): the dimension of every mlp.
             Defaults to 512.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNorm.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
+        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to Norm.
         activation (ModuleType, optional): the activation function after every layer.
             Defaults to nn.SiLU.
     """
@@ -239,8 +238,8 @@ class MLPDecoder(nn.Module):
         mlp_layers: int = 4,
         dense_units: int = 512,
         activation: ModuleType = nn.SiLU,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
-        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
+        norm_cls: Callable[..., nn.Module] = RMSNorm,
+        norm_args = {"normalized_shape": 512}
     ) -> None:
         super().__init__()
         self.output_dims = output_dims
@@ -249,13 +248,13 @@ class MLPDecoder(nn.Module):
             None,
             [dense_units] * mlp_layers,
             activation=activation,
-            layer_args={"bias": layer_norm_cls == nn.Identity},
-            norm_layer=layer_norm_cls,
-            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
+            layer_args={"bias": True},
+            norm_layer=norm_cls,
+            norm_args=norm_args
         )
         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
 
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
+    def forward(self, latent_states: Tensor) -> Tensor:
         x = self.model(latent_states)
         return self.heads[0](x)  # revised to adapt to xuance
 
@@ -275,10 +274,8 @@ class RecurrentModel(nn.Module):
         dyn_layer (int): the number of dyn_layer (block mlp).
         activation_fn (nn.Module): the activation function.
             Default to SiLU.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNorm.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
+        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to Norm.
     """
     
     def __init__(
@@ -290,8 +287,7 @@ class RecurrentModel(nn.Module):
             block_size: int=8,
             dyn_layer: int=1, 
             activation_fn: nn.Module = nn.SiLU,
-            layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
-            layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
+            norm_cls: Callable[..., nn.Module] = RMSNorm,
     ) -> None:
         super().__init__()
         self.g = block_size
@@ -304,9 +300,9 @@ class RecurrentModel(nn.Module):
         self.linear1 = nn.Linear(self.deter_size, self.hidden_size)
         self.linear2 = nn.Linear(self.stoch_size, self.hidden_size)
         self.linear3 = nn.Linear(self.action_size, self.hidden_size)
-        self.norm1 = layer_norm_cls(self.hidden_size, **layer_norm_kw)
-        self.norm2 = layer_norm_cls(self.hidden_size, **layer_norm_kw)
-        self.norm3 = layer_norm_cls(self.hidden_size, **layer_norm_kw)
+        self.norm1 = norm_cls(self.hidden_size)
+        self.norm2 = norm_cls(self.hidden_size)
+        self.norm3 = norm_cls(self.hidden_size)
         self.activation_fn = activation_fn()
         # block mlp
         self.dyn_li = nn.ModuleList()
@@ -316,7 +312,7 @@ class RecurrentModel(nn.Module):
         out_dim = self.deter_size * 3
         for _ in range(self.dyn_layer):
             self.dyn_li.append(BlockLinear(in_dim, self.deter_size, self.g, bias=False))
-            self.norm_li.append(layer_norm_cls(self.deter_size, **layer_norm_kw))
+            self.norm_li.append(norm_cls(self.deter_size))
             in_dim = self.deter_size
         self.dyn_out = BlockLinear(self.deter_size, out_dim, self.g, bias=False)
         
@@ -545,10 +541,8 @@ class Actor(nn.Module):
             Default to nn.SiLU.
         mlp_layers (int): the number of dense layers.
             Default to 5.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNorm.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
+        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+            Defaults to RMSNorm.
         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
             distribution over actions, i.e. given some logits `l` and probabilities `p = softmax(l)`,
             then `p = (1 - self.unimix) * p + self.unimix * unif`,
@@ -570,8 +564,7 @@ class Actor(nn.Module):
             dense_units: int = 1024,
             activation: nn.Module = nn.SiLU,
             mlp_layers: int = 5,
-            layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
-            layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
+            norm_cls: Callable[..., nn.Module] = RMSNorm,
             unimix: float = 0.01,
             action_clip: float = 1.0,
     ) -> None:
@@ -596,9 +589,11 @@ class Actor(nn.Module):
             hidden_sizes=[dense_units] * mlp_layers,
             activation=activation,
             flatten_dim=None,
-            layer_args={"bias": layer_norm_cls == nn.Identity},
-            norm_layer=layer_norm_cls,
-            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
+            layer_args={"bias": True},
+            norm_layer=norm_cls,
+            norm_args={
+                "normalized_shape": dense_units,
+            },
         )
         if is_continuous:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
@@ -859,6 +854,15 @@ class DreamerV3WorldModel(nn.Module):
         world_model_config = config.world_model
         actor_config = config.actor
         critic_config = config.critic
+        
+        """
+        v3_official new structure uses bias linear & rms_norm
+        differ from v3_official old structure: no bias linear & layer_norm
+        """
+        assert config.norm == 'rms'  # assert the structure related prop
+        norm_cls = RMSNorm
+        norm_cls_pixel = RMSNormChannelLast
+
         """deter_size; stoch_size; model_state_size"""
         # Sizes
         recurrent_state_size = world_model_config.recurrent_model.recurrent_state_size
@@ -871,8 +875,7 @@ class DreamerV3WorldModel(nn.Module):
                 input_channels=[int(np.prod(obs_space.shape[:-2]))],
                 image_size=obs_space.shape[-2:],
                 channels_multiplier=world_model_config.encoder.cnn_channels_multiplier,
-                layer_norm_cls=LayerNormChannelLast,
-                layer_norm_kw=world_model_config.encoder.cnn_layer_norm.kw,
+                norm_cls=norm_cls_pixel,
                 activation=nn.SiLU,
                 stages=cnn_stages,
             )
@@ -884,8 +887,7 @@ class DreamerV3WorldModel(nn.Module):
                 mlp_layers=world_model_config.encoder.mlp_layers,
                 dense_units=world_model_config.encoder.dense_units,
                 activation=nn.SiLU,
-                layer_norm_cls=LayerNorm,
-                layer_norm_kw=world_model_config.encoder.mlp_layer_norm.kw,
+                norm_cls=norm_cls,
             )
             if not config.pixel else None
         )
@@ -898,43 +900,30 @@ class DreamerV3WorldModel(nn.Module):
             hidden_size=world_model_config.recurrent_model.dense_units,
             block_size=world_model_config.recurrent_model.block_size,
             dyn_layer=world_model_config.recurrent_model.dyn_layer, 
-            layer_norm_cls=LayerNorm,
-            layer_norm_kw=world_model_config.recurrent_model.layer_norm.kw,
+            norm_cls=norm_cls,
         )
         # recurrent_model(torch.zeros(16, 512), torch.zeros(16, 512), torch.zeros(16, 4))  # test
         represention_model_input_size = encoder.output_dim
         represention_model_input_size += recurrent_state_size
-        representation_ln_cls = LayerNorm
         representation_model = MLP(
             input_dims=represention_model_input_size,  # (h1, x1) -> z1
             output_dim=stochastic_size,
             hidden_sizes=[world_model_config.representation_model.hidden_size],  # post: obslayers: 1
             activation=nn.SiLU,
-            layer_args={"bias": representation_ln_cls == nn.Identity},
+            layer_args={"bias": True},
             flatten_dim=None,
-            norm_layer=[representation_ln_cls],
-            norm_args=[
-                {
-                    **world_model_config.representation_model.layer_norm.kw,
-                    "normalized_shape": world_model_config.representation_model.hidden_size,
-                }
-            ],
+            norm_layer=norm_cls,
+            norm_args={"normalized_shape": world_model_config.representation_model.hidden_size}
         )
-        transition_ln_cls = LayerNorm
         transition_model = MLP(
             input_dims=recurrent_state_size,
             output_dim=stochastic_size,
-            hidden_sizes=[world_model_config.transition_model.hidden_size]*2,  # prior: imglayers: 2
+            hidden_sizes=[world_model_config.transition_model.hidden_size] * 2,  # prior: imglayers: 2
             activation=nn.SiLU,
-            layer_args={"bias": transition_ln_cls == nn.Identity},
+            layer_args={"bias": True},
             flatten_dim=None,
-            norm_layer=[transition_ln_cls]*2,
-            norm_args=[
-                {
-                    **world_model_config.transition_model.layer_norm.kw,
-                    "normalized_shape": world_model_config.transition_model.hidden_size,
-                }
-            ]*2,
+            norm_layer=norm_cls,
+            norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
         )
 
         rssm_cls = RSSM
@@ -956,8 +945,7 @@ class DreamerV3WorldModel(nn.Module):
                 cnn_encoder_output_dim=cnn_encoder.output_dim,
                 image_size=obs_space.shape[-2:],
                 activation=nn.SiLU,
-                layer_norm_cls=LayerNormChannelLast,
-                layer_norm_kw=world_model_config.observation_model.mlp_layer_norm.kw,
+                norm_cls=norm_cls_pixel,
                 stages=cnn_stages,
             )
             if config.pixel else None
@@ -969,41 +957,33 @@ class DreamerV3WorldModel(nn.Module):
                 mlp_layers=world_model_config.observation_model.mlp_layers,
                 dense_units=world_model_config.observation_model.dense_units,
                 activation=nn.SiLU,
-                layer_norm_cls=LayerNorm,
-                layer_norm_kw=world_model_config.observation_model.mlp_layer_norm.kw,
+                norm_cls=norm_cls,
+                norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
             )
             if not config.pixel else None
         )
         observation_model = MultiDecoder(cnn_decoder, mlp_decoder).to(config.device)
 
-        reward_ln_cls = LayerNorm
         reward_model = MLP(
             input_dims=latent_state_size,
             output_dim=world_model_config.reward_model.bins,
             hidden_sizes=[world_model_config.reward_model.dense_units] * world_model_config.reward_model.mlp_layers,
             activation=nn.SiLU,
-            layer_args={"bias": reward_ln_cls == nn.Identity},
+            layer_args={"bias": True},
             flatten_dim=None,
-            norm_layer=reward_ln_cls,
-            norm_args={
-                **world_model_config.reward_model.layer_norm.kw,
-                "normalized_shape": world_model_config.reward_model.dense_units,
-            },
+            norm_layer=norm_cls,
+            norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
         ).to(config.device)
 
-        discount_ln_cls = LayerNorm
         continue_model = MLP(
             input_dims=latent_state_size,
             output_dim=1,
             hidden_sizes=[world_model_config.discount_model.dense_units] * world_model_config.discount_model.mlp_layers,
             activation=nn.SiLU,
-            layer_args={"bias": discount_ln_cls == nn.Identity},
+            layer_args={"bias": True},
             flatten_dim=None,
-            norm_layer=discount_ln_cls,
-            norm_args={
-                **world_model_config.discount_model.layer_norm.kw,
-                "normalized_shape": world_model_config.discount_model.dense_units,
-            },
+            norm_layer=norm_cls,
+            norm_args={"normalized_shape": world_model_config.discount_model.dense_units},
         ).to(config.device)
         world_model = WorldModel(
             encoder.apply(init_weights),
@@ -1024,40 +1004,28 @@ class DreamerV3WorldModel(nn.Module):
             activation=nn.SiLU,
             mlp_layers=actor_config.mlp_layers,
             distribution_config=config.distribution,
-            layer_norm_cls=LayerNorm,
-            layer_norm_kw=actor_config.layer_norm.kw,
+            norm_cls=norm_cls,
             unimix=config.unimix,
             action_clip=actor_config.action_clip,
         ).to(config.device)
 
-        critic_ln_cls = LayerNorm
         critic = MLP(
             input_dims=latent_state_size,
             output_dim=critic_config.bins,
             hidden_sizes=[critic_config.dense_units] * critic_config.mlp_layers,
             activation=nn.SiLU,
-            layer_args={"bias": critic_ln_cls == nn.Identity},
+            layer_args={"bias": True},
             flatten_dim=None,
-            norm_layer=critic_ln_cls,
+            norm_layer=norm_cls,
             norm_args={
-                **critic_config.layer_norm.kw,
                 "normalized_shape": critic_config.dense_units,
             },
         ).to(config.device)
-        actor.apply(init_weights)
-        critic.apply(init_weights)
 
-        if config.hafner_initialization:
-            actor.mlp_heads.apply(uniform_init_weights(1.0))
-            critic.model[-1].apply(uniform_init_weights(0.0))
-            rssm.transition_model.model[-1].apply(uniform_init_weights(1.0))
-            rssm.representation_model.model[-1].apply(uniform_init_weights(1.0))
-            world_model.reward_model.model[-1].apply(uniform_init_weights(0.0))
-            world_model.continue_model.model[-1].apply(uniform_init_weights(1.0))
-            if mlp_decoder is not None:
-                mlp_decoder.heads.apply(uniform_init_weights(1.0))
-            if cnn_decoder is not None:
-                cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
+        if config.trunc_normal_init:
+            world_model.apply(trunc_normal_init_weights)
+            actor.apply(trunc_normal_init_weights)
+            critic.apply(trunc_normal_init_weights)
 
         player = PlayerDV3(  # encoder, rssm, actor
             copy.deepcopy(world_model.encoder),
