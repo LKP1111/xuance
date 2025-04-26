@@ -99,7 +99,7 @@ world_model:
   # rssm (hidden_size in rssm; dense_units in others)
   rssm:  
     # recurrent_model; alias: gru, dynamic_model, sequence_model
-    learnable_init_state: true
+    learnable_init_state: False  # not implemented in v3_official_new
     deter_size: 8192  # 8 blocks of 512 hidden_size
     stoch_size: 32  # stoch for cont_act; (stoch * classes) for disc_act
     classes: 64

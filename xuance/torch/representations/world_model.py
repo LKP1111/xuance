@@ -216,7 +216,7 @@ class RSSM(nn.Module):
             embed_size: int,  # calc right after encoder is created
             action_size: int,
             # recurrent_model
-            learnable_init_state: bool = True,
+            learnable_init_state: bool = False,
             deter_size: int = 8192, 
             stoch_size: int = 32,
             classes: int = 64,
@@ -234,6 +234,7 @@ class RSSM(nn.Module):
         super().__init__()
         """recurrent_model"""
         # store for forward
+        assert not learnable_init_state
         self.g = blocks
         self.hidden_size = hidden_size
         self.stoch_size = stoch_size
@@ -328,10 +329,17 @@ class RSSM(nn.Module):
         out = self.repr_model(input)
         return self.to_logits(out).view(*batch_shape, self.stoch_size, self.classes)
 
-    # h1, z1, x1, a1 -> h2, z2, z2_hat
+    # h0, z0, x1, a0, f2 -> h1, z1, z1_hat
     def observe(self, 
                 deter: Tensor, stoch: Tensor,
-                embed: Tensor, action: Tensor):
+                embed: Tensor, action: Tensor, is_first: Tensor):
+        # mask
+        deter, stoch, action = [
+            torch.where(
+                ~is_first.bool().view(is_first.shape + (1, ) * (x.dim() - is_first.dim())).expand_as(x), 
+                x, torch.zeros_like(x))
+            for x in [deter, stoch, action]
+        ]
         deter = self(deter, stoch, action)
         post_logits = self.uniform_mix(self.posterior_forward(deter, embed))
         post = Independent(OneHotCategoricalStraightThrough(logits=post_logits), 1).rsample()
@@ -339,7 +347,7 @@ class RSSM(nn.Module):
         prior = Independent(OneHotCategoricalStraightThrough(logits=prior_logits), 1).rsample()
         return deter, post, post_logits, prior, prior_logits
     
-    # h1, z1_hat, a1 -> h2, z2_hat
+    # h0, z0_hat, a0 -> h1, z1_hat
     def imagine(self, deter: Tensor, stoch: Tensor, action: Tensor):
         deter = self(deter, stoch, action)
         prior_logits = self.uniform_mix(self.prior_forward(deter))
@@ -362,7 +370,8 @@ class RSSM(nn.Module):
         model = RSSM(4096, 2).apply(trunc_normal_init_weights()).to("cuda:1")
         deter, stoch = torch.zeros(16, 64, 8192).to("cuda:1"), torch.zeros(16, 64, 32, 64).to("cuda:1")
         action, embed = torch.zeros(16, 64, 2).to("cuda:1"), torch.zeros(16, 64, 4096).to("cuda:1")
-        deter, post, post_logits, prior, prior_logits = model.observe(deter, stoch, embed, action)
+        is_first = torch.zeros(16, 64, 1).float().to("cuda:1")
+        deter, post, post_logits, prior, prior_logits = model.observe(deter, stoch, embed, action, is_first)
         print('\n'.join(['observe'] + [f'{name}: {val.shape}' for name, val in 
          zip('deter, post, post_logits, prior, prior_logits'.split(', '), 
              [deter, post, post_logits, prior, prior_logits])]))
