@@ -227,6 +227,7 @@ class RSSM(nn.Module):
             img_layers: int = 2,
             # representation_model; alias: posterior
             obs_layers: int = 1,
+            absolute: bool = False,
             # unimix
             unimix: float = 0.01
     ) -> None:
@@ -238,6 +239,7 @@ class RSSM(nn.Module):
         self.stoch_size = stoch_size
         self.classes = classes
         self.unimix = unimix
+        self.absolute = absolute
         # 3 linear
         linear1 = nn.Linear(deter_size, hidden_size)
         linear2 = nn.Linear(stoch_size * classes, hidden_size)
@@ -271,7 +273,7 @@ class RSSM(nn.Module):
             ], hidden_size
         self.trans_model = nn.Sequential(*li)
         """representation_model"""
-        li, in_dim = [], deter_size + embed_size
+        li, in_dim = [], deter_size + embed_size if not absolute else embed_size
         for _ in range(obs_layers):
             li, in_dim = li + [
                 nn.Linear(in_dim, hidden_size), 
@@ -322,7 +324,8 @@ class RSSM(nn.Module):
     # representation_model_forward: h1, x1 -> z1
     def posterior_forward(self, deter: Tensor, embed: Tensor) -> Tensor:
         batch_shape = deter.shape[:-1]
-        out = self.repr_model(torch.cat([deter, embed], dim=-1))
+        input = torch.cat([deter, embed], dim=-1) if not self.absolute else embed
+        out = self.repr_model(input)
         return self.to_logits(out).view(*batch_shape, self.stoch_size, self.classes)
 
     # h1, z1, x1, a1 -> h2, z2, z2_hat

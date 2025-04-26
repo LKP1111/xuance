@@ -112,6 +112,7 @@ world_model:
     # representation_model; alias: posterior
     obs_layers: 1
     hidden_size: 1024
+    absolute: False  # if True, posterior will only calc from obs_embed, rather than concat of obs_embed and deter
   # predictors
   reward_preditor:
     mlp_layers: 1
