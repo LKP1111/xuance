@@ -65,9 +65,6 @@ pixel: True
 world_model:
   # grad_clip
   clip_gradients: 1000.0
-  # stoch & classes
-  stochastic_size: 32
-  discrete_size: 64
   
   # loss_scales
   kl_dynamic: 1.0
@@ -87,7 +84,7 @@ world_model:
     layers: 3
     symlog: True
     dense_units: 1024
-  decoder:
+  decoder:  # alias: obs_predictor
     # cnn
     depth: 64
     mults: [2, 3, 4, 4]
@@ -100,33 +97,30 @@ world_model:
     dense_units: 1024
     
   # rssm (hidden_size in rssm; dense_units in others)
-  learnable_initial_recurrent_state: true
-  recurrent_model:
+  rssm:  
+    # recurrent_model; alias: gru, dynamic_model, sequence_model
+    learnable_init_state: true
+    deter_size: 8192  # 8 blocks of 512 hidden_size
+    stoch_size: 32  # stoch for cont_act; (stoch * classes) for disc_act
+    classes: 64
     blocks: 8
-    dyn_layer: 1
-    recurrent_state_size: 8192  # 8 blocks of 512 hidden_size
-    dense_units: 1024
-  transition_model:
+    dyn_layers: 1
     hidden_size: 1024
-  representation_model:
+    # transition_model; alias: prior
+    img_layers: 2
     hidden_size: 1024
-  # predictors (decoder is obs_predictor)
-  reward_model:
+    # representation_model; alias: posterior
+    obs_layers: 1
+    hidden_size: 1024
+  # predictors
+  reward_preditor:
     mlp_layers: 1
     dense_units: 1024
     bins: 255
-  discount_model:
+  discount_predictor:
     learnable: true
     mlp_layers: 1
     dense_units: 1024
-  # encoder:
-  #   cnn_channels_multiplier: 64
-  #   mlp_layers: 3
-  #   dense_units: 1024
-  # observation_model:
-  #   cnn_channels_multiplier: 64
-  #   mlp_layers: 3
-  #   dense_units: 1024
 gamma: 0.996996996996997
 lmbda: 0.95
 horizon: 15

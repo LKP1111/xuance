@@ -805,6 +805,8 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.scale = scale  # related to torch elementwise_affine
         self.normalized_shape = normalized_shape  # last dim size
+        if not isinstance(normalized_shape, int):
+            assert len(normalized_shape) == 1
         if self.scale:
             self.weight = nn.Parameter(torch.empty(self.normalized_shape))
         else:

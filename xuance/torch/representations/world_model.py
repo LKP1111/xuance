@@ -113,7 +113,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(
             self,
-            # input_latent_size: deter + stoch; output_obs_shape
+            # input_latent_size: deter & stoch; output_obs_shape
             deter_size: int,  
             stoch_size: int,  
             obs_shape: Sequence[int],
@@ -209,483 +209,343 @@ class Decoder(nn.Module):
 #               torch.zeros(16, 64, 64, 32).to("cuda:1")).shape  # [16, 64, 4]
 
 
-
-# class CNNEncoder(nn.Module):
-#     """The Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
-#     kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.Norm`
-#     is used after the convolution. This 4-stages model assumes that the image
-#     is a 64x64 and it ends with a resolution of 4x4. If more than one image is to be encoded, then those will
-#     be concatenated on the channel dimension and fed to the encoder.
-
-#     Args:
-#         input_channels (Sequence[int]): the input channels, one for each image observation to encode.
-#         image_size (Tuple[int, int]): the image size as (Height,Width).
-#         channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
-#             will be [1, 2, 4, 8] * `channels_multiplier`.
-#         norm_cls (Callable[..., nn.Module]): the norm to apply after the input projection.
-#             Defaults to RMSNorm.
-#         activation (ModuleType, optional): the activation function.
-#             Defaults to nn.SiLU.
-#         stages (int, optional): how many stages for the CNN.
-#     """
-
-#     def __init__(
-#             self,
-#             input_channels: Sequence[int],
-#             image_size: Tuple[int, int],
-#             channels_multiplier: int,
-#             norm_cls: Callable[..., nn.Module] = RMSNormChannelLast,
-#             activation: ModuleType = nn.SiLU,
-#             stages: int = 4,
-#     ) -> None:
-#         super().__init__()
-#         self.input_dim = (sum(input_channels), *image_size)
-#         self.model = nn.Sequential(
-#             CNN(
-#                 input_channels=self.input_dim[0],
-#                 hidden_channels=(torch.tensor([2 ** i for i in range(stages)]) * channels_multiplier).tolist(),
-#                 cnn_layer=nn.Conv2d,
-#                 layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": True},
-#                 activation=activation,
-#                 norm_layer=[norm_cls] * stages,
-#                 norm_args=[
-#                     {"normalized_shape": (2 ** i) * channels_multiplier} for i in range(stages)
-#                 ],
-#             ),
-#             nn.Flatten(-3, -1),
-#         )
-#         with torch.no_grad():
-#             self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
-
-#     def forward(self, obs: Tensor) -> Tensor:
-#         return cnn_forward(self.model, obs, obs.shape[-3:], (-1,))
-
-
-# class CNNDecoder(nn.Module):
-#     """The exact inverse of the `CNNEncoder` class. It assumes an initial resolution
-#     of 4x4, and in 4 stages reconstructs the observation image to 64x64. If multiple
-#     images are to be reconstructed, then it will create a dictionary with an entry
-#     for every reconstructed image. No bias is used if a `nn.Norm` is used after
-#     the `nn.Conv2dTranspose` layer.
-
-#     Args:
-#         output_channels (Sequence[int]): the output channels, one for every image observation.
-#         channels_multiplier (int): the channels multiplier, same for the encoder network.
-#         latent_state_size (int): the size of the latent state. Before applying the decoder,
-#             a `nn.Linear` layer is used to project the latent state to a feature vector
-#             of dimension [8 * `channels_multiplier`, 4, 4].
-#         cnn_encoder_output_dim (int): the output of the image encoder. It should be equal to
-#             8 * `channels_multiplier` * 4 * 4.
-#         image_size (Tuple[int, int]): the final image size.
-#         activation (nn.Module, optional): the activation function.
-#             Defaults to nn.SiLU.
-#         norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-#             Defaults to NormChannelLast.
-#             Default to {"eps": 1e-3}.
-#         stages (int): how many stages in the CNN decoder.
-#     """
-
-#     def __init__(
-#             self,
-#             output_channels: Sequence[int],
-#             channels_multiplier: int,
-#             latent_state_size: int,
-#             cnn_encoder_output_dim: int,
-#             image_size: Tuple[int, int],
-#             activation: nn.Module = nn.SiLU,
-#             norm_cls: Callable[..., nn.Module] = RMSNormChannelLast,
-#             stages: int = 4,
-#     ) -> None:
-#         super().__init__()
-#         self.output_channels = output_channels
-#         self.cnn_encoder_output_dim = cnn_encoder_output_dim
-#         self.image_size = image_size
-#         self.output_dim = (sum(output_channels), *image_size)
-#         self.model = nn.Sequential(
-#             nn.Linear(latent_state_size, cnn_encoder_output_dim),
-#             nn.Unflatten(1, (-1, 4, 4)),
-#             DeCNN(
-#                 input_channels=(2 ** (stages - 1)) * channels_multiplier,
-#                 hidden_channels=(
-#                                         torch.tensor(
-#                                             [2 ** i for i in reversed(range(stages - 1))]) * channels_multiplier
-#                                 ).tolist()
-#                                 + [self.output_dim[0]],
-#                 cnn_layer=nn.ConvTranspose2d,
-#                 layer_args=[
-#                                {"kernel_size": 4, "stride": 2, "padding": 1, "bias": True}
-#                                for _ in range(stages - 1)
-#                            ]
-#                            + [{"kernel_size": 4, "stride": 2, "padding": 1}],
-#                 activation=[activation for _ in range(stages - 1)] + [None],
-#                 norm_layer=[norm_cls for _ in range(stages - 1)] + [None],
-#                 norm_args=[
-#                               {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
-#                               for i in range(stages - 1)
-#                           ]
-#                           + [None],
-#             ),
-#         )
-
-#     def forward(self, latent_states: Tensor) -> List[Tensor]:
-#         cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
-#         return torch.split(cnn_out, self.output_channels, -3)
-
-
-# class MLPEncoder(nn.Module):
-#     """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
-#     N is specified by `mlp_layers`. No bias is used if a `nn.Norm` is used after the linear layer.
-#     If more than one vector is to be encoded, then those will concatenated on the last
-#     dimension before being fed to the encoder.
-
-#     Args:
-#         input_dims (Sequence[int]): the dimensions of every vector to encode.
-#         mlp_layers (int, optional): how many mlp layers.
-#             Defaults to 4.
-#         dense_units (int, optional): the dimension of every mlp.
-#             Defaults to 512.
-#         norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-#             Defaults to Norm.
-#         activation (ModuleType, optional): the activation function after every layer.
-#             Defaults to nn.SiLU.
-#         sym_log_inputs (bool, optional): whether to squash the input with the sym_log function.
-#             Defaults to True.
-#     """
-
-#     def __init__(
-#             self,
-#             input_dims: Sequence[int],
-#             mlp_layers: int = 4,
-#             dense_units: int = 512,
-#             norm_cls: Callable[..., nn.Module] = RMSNorm,
-#             activation: ModuleType = nn.SiLU,
-#             sym_log_inputs: bool = True,
-#     ) -> None:
-#         super().__init__()
-#         self.input_dim = sum(input_dims)  # [4]
-#         self.model = MLP(
-#             self.input_dim,
-#             None,
-#             [dense_units] * mlp_layers,
-#             activation=activation,
-#             layer_args={"bias": True},
-#             norm_layer=norm_cls,
-#             norm_args={"normalized_shape": dense_units},
-#         )
-#         self.output_dim = dense_units
-#         self.sym_log_inputs = sym_log_inputs  # True
-
-#     def forward(self, obs: Tensor) -> Tensor:
-#         # x = torch.cat([sym_log(obs[k]) if self.sym_log_inputs else obs[k] for k in self.keys], -1)
-#         return self.model(sym_log(obs))
-
-
-# class MLPDecoder(nn.Module):
-#     """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
-#     N is specified by `mlp_layers`. No bias is used if a `nn.Norm` is used after the linear layer.
-#     If more than one vector is to be decoded, then it will create a dictionary with an entry
-#     for every reconstructed vector.
-
-#     Args:
-#         keys (Sequence[str]): the keys representing the vector observations to decode.
-#         output_dims (Sequence[int]): the dimensions of every vector to decode.
-#         latent_state_size (int): the dimension of the latent state.
-#         mlp_layers (int, optional): how many mlp layers.
-#             Defaults to 4.
-#         dense_units (int, optional): the dimension of every mlp.
-#             Defaults to 512.
-#         norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-#             Defaults to Norm.
-#         activation (ModuleType, optional): the activation function after every layer.
-#             Defaults to nn.SiLU.
-#     """
-
-#     def __init__(
-#         self,
-#         output_dims: Sequence[int],
-#         latent_state_size: int,
-#         mlp_layers: int = 4,
-#         dense_units: int = 512,
-#         activation: ModuleType = nn.SiLU,
-#         norm_cls: Callable[..., nn.Module] = RMSNorm,
-#         norm_args = {"normalized_shape": 512}
-#     ) -> None:
-#         super().__init__()
-#         self.output_dims = output_dims
-#         self.model = MLP(
-#             latent_state_size,
-#             None,
-#             [dense_units] * mlp_layers,
-#             activation=activation,
-#             layer_args={"bias": True},
-#             norm_layer=norm_cls,
-#             norm_args=norm_args
-#         )
-#         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
-
-#     def forward(self, latent_states: Tensor) -> Tensor:
-#         x = self.model(latent_states)
-#         return self.heads[0](x)  # revised to adapt to xuance
-
-
-class RecurrentModel(nn.Module):
-    """Recurrent model for the model-base Dreamer-V3 agent.
-    This implementation uses the `models.BlockLinear`, 
-    which enables the sequence model to be a GRU with block-diagonal recurrent weights of 8 blocks,
-    to allow for a large number of memory units without quadratic increase in parameters and FLOPs
-
-    Args:
-        deter_size (int): the size of the recurrent state.
-        stoch_size (int): the size of the stochastic state.
-        action_size (int): the size of the action.
-        hidden_size (int): the number of dense units.
-        blocks (int): the number of blocks.
-        dyn_layer (int): the number of dyn_layer (block mlp).
-        activation_fn (nn.Module): the activation function.
-            Default to SiLU.
-        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to Norm.
-    """
-    
+class RSSM(nn.Module):
     def __init__(
             self,
-            deter_size: int,
-            stoch_size: int,
+            # input
+            embed_size: int,  # calc right after encoder is created
             action_size: int,
-            hidden_size: int,  # related to config.dense_units
-            blocks: int=8,
-            dyn_layer: int=1, 
-            activation_fn: nn.Module = nn.SiLU,
-            norm_cls: Callable[..., nn.Module] = RMSNorm,
+            # recurrent_model
+            learnable_init_state: bool = True,
+            deter_size: int = 8192, 
+            stoch_size: int = 32,
+            classes: int = 64,
+            blocks: int = 8,
+            dyn_layers: int = 1,
+            hidden_size: int = 1024,
+            # transition_model; alias: prior
+            img_layers: int = 2,
+            # representation_model; alias: posterior
+            obs_layers: int = 1,
+            # unimix
+            unimix: float = 0.01
     ) -> None:
         super().__init__()
+        """recurrent_model"""
+        # store for forward
         self.g = blocks
         self.hidden_size = hidden_size
-        self.deter_size = self.recurrent_state_size = deter_size
         self.stoch_size = stoch_size
-        self.action_size = action_size
-        self.dyn_layer = dyn_layer
+        self.classes = classes
+        self.unimix = unimix
         # 3 linear
-        self.linear1 = nn.Linear(self.deter_size, self.hidden_size)
-        self.linear2 = nn.Linear(self.stoch_size, self.hidden_size)
-        self.linear3 = nn.Linear(self.action_size, self.hidden_size)
-        self.norm1 = norm_cls(self.hidden_size)
-        self.norm2 = norm_cls(self.hidden_size)
-        self.norm3 = norm_cls(self.hidden_size)
-        self.activation_fn = activation_fn()
+        linear1 = nn.Linear(deter_size, hidden_size)
+        linear2 = nn.Linear(stoch_size * classes, hidden_size)
+        linear3 = nn.Linear(action_size, hidden_size)
+        norm1 = RMSNorm(hidden_size)
+        norm2 = RMSNorm(hidden_size)
+        norm3 = RMSNorm(hidden_size)
+        self.dyn_model1 = nn.ModuleList([
+            nn.Sequential(linear1, norm1, nn.SiLU()),
+            nn.Sequential(linear2, norm2, nn.SiLU()),
+            nn.Sequential(linear3, norm3, nn.SiLU()),
+        ])
         # block mlp
-        self.dyn_li = nn.ModuleList()
-        self.norm_li = nn.ModuleList()
+        li = []
         # in: g * hidden * 3 + deter; out: self.deter_size * 3
-        in_dim = self.g * self.hidden_size * 3 + self.deter_size
-        out_dim = self.deter_size * 3
-        for _ in range(self.dyn_layer):
-            self.dyn_li.append(BlockLinear(in_dim, self.deter_size, self.g, bias=False))
-            self.norm_li.append(norm_cls(self.deter_size))
-            in_dim = self.deter_size
-        self.dyn_out = BlockLinear(self.deter_size, out_dim, self.g, bias=False)
-        
+        in_dim = blocks * hidden_size * 3 + deter_size
+        out_dim = deter_size * 3
+        for _ in range(dyn_layers):
+            li, in_dim = li + [
+                BlockLinear(in_dim, deter_size, blocks), 
+                RMSNorm(deter_size), nn.SiLU()
+            ], deter_size
+        li.append(BlockLinear(deter_size, out_dim, blocks))
+        self.dyn_model2 = nn.Sequential(*li)
+        """transition_model"""
+        li, in_dim = [], deter_size
+        for _ in range(img_layers):
+            li, in_dim = li + [
+                nn.Linear(in_dim, hidden_size), 
+                RMSNorm(hidden_size), nn.SiLU()
+            ], hidden_size
+        self.trans_model = nn.Sequential(*li)
+        """representation_model"""
+        li, in_dim = [], deter_size + embed_size
+        for _ in range(obs_layers):
+            li, in_dim = li + [
+                nn.Linear(in_dim, hidden_size), 
+                RMSNorm(hidden_size), nn.SiLU()
+            ], hidden_size
+        self.repr_model = nn.Sequential(*li)
+        """hidden -> stoch * classes"""
+        self.to_logits = nn.Linear(hidden_size, stoch_size * classes)
 
+    # recurrent_model_forward: h1, z1, a1 -> h2
     def forward(self, deter: Tensor, stoch: Tensor, action: Tensor) -> Tensor:
-        """
-        Compute the next recurrent state from the latent state (stochastic and recurrent states) and the actions.
-
-        Args:
-            deter (Tensor): the previous recurrent state.
-            stoch (Tensor): the previous stochastic state.
-            action (Tensor): action
-
-        Returns:
-            the computed recurrent output and recurrent state.
-        """
-        # seq_batch2batch
-        origin_shape = deter.shape[:-1]
-        B = np.prod(origin_shape)
+        batch_shape = deter.shape[:-1]
+        B = np.prod(batch_shape)
+        # linear part
         deter = deter.view(B, -1)
         stoch = stoch.view(B, -1)
         action = action.view(B, -1)
+        # action / max(1, |action|); action if |action| < 1 else 1; clip action out of [-1, 1]
         action /= torch.max(torch.as_tensor(1.0), torch.abs(action)).detach()
-        g = self.g
-        hidden_size = self.hidden_size
-        x1 = self.activation_fn(self.norm1(self.linear1(deter)))
-        x2 = self.activation_fn(self.norm2(self.linear2(stoch)))
-        x3 = self.activation_fn(self.norm3(self.linear3(action)))
+        x1, x2, x3 = [self.dyn_model1[i]([deter, stoch, action][i]) for i in range(3)]
         
+        # block linear part
+        g = self.g
         # -> [B, g, hidden * 3]
-        x = torch.cat([x1, x2, x3], -1).unsqueeze(1).expand(-1, g, hidden_size * 3)
+        x = torch.cat([x1, x2, x3], -1).unsqueeze(1).expand(-1, g, self.hidden_size * 3)
         # -> [B, g, hidden * 3 + deter // g]
         x = torch.cat([x, deter.view(B, g, -1)], -1)
         # -> [B, g * hidden * 3 + deter]
         x = x.view(B, -1)
         # -> [B, deter * 3]
-        for i in range(self.dyn_layer):
-            x = self.dyn_li[i](x)
-            x = self.norm_li[i](x)
-        x = self.dyn_out(x)
+        x = self.dyn_model2(x)
 
+        # gru part
         reset, cand, update = [y.reshape(B, -1) for y in torch.chunk(x.view(B, g, -1), 3, -1)]
         reset = torch.sigmoid(reset)
         cand = torch.tanh(reset * cand)
         update = torch.sigmoid(update - 1)
         next_deter = update * cand + (1 - update) * deter
-        return next_deter.view(*origin_shape, -1)
 
+        return next_deter.view(*batch_shape, -1)
 
-class RSSM(nn.Module):
-    """RSSM model for the model-base Dreamer agent.
+    # transition_model_forward: h1 -> z1_hat
+    def prior_forward(self, deter: Tensor) -> Tensor:
+        batch_shape = deter.shape[:-1]
+        out = self.trans_model(deter)
+        return self.to_logits(out).view(*batch_shape, self.stoch_size, self.classes)
+        
+    # representation_model_forward: h1, x1 -> z1
+    def posterior_forward(self, deter: Tensor, embed: Tensor) -> Tensor:
+        batch_shape = deter.shape[:-1]
+        out = self.repr_model(torch.cat([deter, embed], dim=-1))
+        return self.to_logits(out).view(*batch_shape, self.stoch_size, self.classes)
 
-    Args:
-        recurrent_model (nn.Module): the recurrent model of the RSSM model described in
-            [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-        representation_model (nn.Module): the representation model composed by a
-            multi-layer perceptron to compute the stochastic part of the latent state.
-            For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-        transition_model (nn.Module): the transition model described in
-            [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-            The model is composed by a multi-layer perceptron to predict the stochastic part of the latent state.
-        distribution_config (Dict[str, Any]): the configs of the distributions.
-        discrete (int, optional): the size of the Categorical variables.
-            Defaults to 32.
-        unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
-            distribution over states, i.e. given some logits `l` and probabilities `p = softmax(l)`,
-            then `p = (1 - self.unimix) * p + self.unimix * unif`, where `unif = `1 / self.discrete`.
-            Defaults to 0.01.
-    """
+    # h1, z1, x1, a1 -> h2, z2, z2_hat
+    def observe(self, 
+                deter: Tensor, stoch: Tensor,
+                embed: Tensor, action: Tensor):
+        deter = self(deter, stoch, action)
+        post_logits = self.uniform_mix(self.posterior_forward(deter, embed))
+        post = Independent(OneHotCategoricalStraightThrough(logits=post_logits), 1).rsample()
+        prior_logits = self.uniform_mix(self.prior_forward(deter))
+        prior = Independent(OneHotCategoricalStraightThrough(logits=prior_logits), 1).rsample()
+        return deter, post, post_logits, prior, prior_logits
+    
+    # h1, z1_hat, a1 -> h2, z2_hat
+    def imagine(self, deter: Tensor, stoch: Tensor, action: Tensor):
+        deter = self(deter, stoch, action)
+        prior_logits = self.uniform_mix(self.prior_forward(deter))
+        # TODO whether to sample
+        prior = Independent(OneHotCategoricalStraightThrough(logits=prior_logits), 1).rsample()  
+        return deter, prior, prior_logits
 
-    def __init__(
-            self,
-            recurrent_model: RecurrentModel,
-            representation_model: nn.Module,
-            transition_model: nn.Module,
-            distribution_config: Dict[str, Any],
-            discrete: int = 32,
-            unimix: float = 0.01,
-            learnable_initial_recurrent_state: bool = True,
-    ) -> None:
-        super().__init__()
-        self.recurrent_model = recurrent_model
-        self.representation_model = representation_model
-        self.transition_model = transition_model
-        self.distribution_config = distribution_config
-        self.discrete = discrete
-        self.unimix = unimix
-        if learnable_initial_recurrent_state:
-            self.initial_recurrent_state = nn.Parameter(
-                torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
-            )
-        else:
-            self.register_buffer(
-                "initial_recurrent_state", torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
-            )
-
-    def get_initial_states(self, batch_shape: Union[Sequence[int], torch.Size]) -> Tuple[Tensor, Tensor]:
-        initial_recurrent_state = torch.tanh(self.initial_recurrent_state).expand(*batch_shape, -1)
-        initial_posterior = self._transition(initial_recurrent_state, sample_state=False)[1]
-        return initial_recurrent_state, initial_posterior
-
-    def dynamic(
-            self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """
-        Perform one step of the dynamic learning:
-            Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
-                i.e., it computes the deterministic state (or ht).
-            Transition model: predict the prior from the recurrent output.
-            Representation model: compute the posterior from the recurrent state and from
-                the embedded observations provided by the environment.
-        For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
-        and [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
-
-        Args:
-            posterior (Tensor): the stochastic state computed by the representation model (posterior). It is expected
-                to be of dimension `[stoch_size, self.discrete]`, which by default is `[32, 32]`.
-            recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
-            action (Tensor): the action taken by the agent.
-            embedded_obs (Tensor): the embedded observations provided by the environment.
-            is_first (Tensor): if this is the first step in the episode.
-
-        Returns:
-            The recurrent state (Tensor): the recurrent state of the recurrent model.
-            The posterior stochastic state (Tensor): computed by the representation model
-            The prior stochastic state (Tensor): computed by the transition model
-            The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
-            The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
-            from the recurrent state and the embbedded observation.
-        """
-        action = (1 - is_first) * action
-
-        initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
-        recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
-        posterior = posterior.view(*posterior.shape[:-2], -1)
-        posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
-
-        recurrent_state = self.recurrent_model(recurrent_state, posterior, action)
-        prior_logits, prior = self._transition(recurrent_state)
-        posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
-        return recurrent_state, posterior, prior, posterior_logits, prior_logits
-
-    def _uniform_mix(self, logits: Tensor) -> Tensor:
-        dim = logits.dim()
-        if dim == 3:
-            logits = logits.view(*logits.shape[:-1], -1, self.discrete)
-        elif dim != 4:
-            raise RuntimeError(f"The logits expected shape is 3 or 4: received a {dim}D tensor")
+    def uniform_mix(self, logits: Tensor) -> Tensor:
+        batch_shape = logits.shape[:-2]
+        logits = logits.flatten(-2, -1)
         if self.unimix > 0.0:
             probs = logits.softmax(dim=-1)
-            uniform = torch.ones_like(probs) / self.discrete
+            uniform = torch.ones_like(probs) / probs.shape[-1]
             probs = (1 - self.unimix) * probs + self.unimix * uniform
             logits = probs_to_logits(probs)
-        logits = logits.view(*logits.shape[:-2], -1)
-        return logits
+        return logits.view(*batch_shape, self.stoch_size, self.classes)
 
-    def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        Args:
-            recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
-                what is called h or deterministic state in
-                [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
-            embedded_obs (Tensor): the embedded real observations provided by the environment.
+    @staticmethod
+    def test_myself():
+        model = RSSM(4096, 2).apply(trunc_normal_init_weights()).to("cuda:1")
+        deter, stoch = torch.zeros(16, 64, 8192).to("cuda:1"), torch.zeros(16, 64, 32, 64).to("cuda:1")
+        action, embed = torch.zeros(16, 64, 2).to("cuda:1"), torch.zeros(16, 64, 4096).to("cuda:1")
+        deter, post, post_logits, prior, prior_logits = model.observe(deter, stoch, embed, action)
+        print('\n'.join(['observe'] + [f'{name}: {val.shape}' for name, val in 
+         zip('deter, post, post_logits, prior, prior_logits'.split(', '), 
+             [deter, post, post_logits, prior, prior_logits])]))
+        deter, prior, prior_logits = model.imagine(deter, stoch, action)
+        print(sum([torch.isnan(x).sum() for x in [deter, post, post_logits, prior, prior_logits]]))
 
-        Returns:
-            logits (Tensor): the logits of the distribution of the posterior state.
-            posterior (Tensor): the sampled posterior stochastic state.
-        """
-        logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
-        logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(logits, discrete=self.discrete)
+        print('\n'.join(['imagine'] + [f'{name}: {val.shape}' for name, val in 
+         zip('deter, prior, prior_logits'.split(', '), 
+             [ deter, prior, prior_logits])]))
+        print(sum([torch.isnan(x).sum() for x in [deter, prior, prior_logits]]))
+        
 
-    def _transition(self, recurrent_out: Tensor, sample_state=True) -> Tuple[Tensor, Tensor]:
-        """
-        Args:
-            recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
-            sampler_state (bool): whether or not to sample the stochastic state.
-                Default to True
+# # RSSM test (ok)
+# """
+# observe
+# deter: torch.Size([16, 64, 8192])
+# post: torch.Size([16, 64, 32, 64])
+# post_logits: torch.Size([16, 64, 32, 64])
+# prior: torch.Size([16, 64, 32, 64])
+# prior_logits: torch.Size([16, 64, 32, 64])
+# tensor(0, device='cuda:1')
+# imagine
+# deter: torch.Size([16, 64, 8192])
+# prior: torch.Size([16, 64, 32, 64])
+# prior_logits: torch.Size([16, 64, 32, 64])
+# tensor(0, device='cuda:1')
+# """
+# RSSM.test_myself()
+# print()
 
-        Returns:
-            logits (Tensor): the logits of the distribution of the prior state.
-            prior (Tensor): the sampled prior stochastic state.
-        """
-        logits: Tensor = self.transition_model(recurrent_out)
-        logits = self._uniform_mix(logits)
-        return logits, compute_stochastic_state(logits, discrete=self.discrete, sample=sample_state)
 
-    def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        One-step imagination of the next latent state.
-        It can be used several times to imagine trajectories in the latent space (Transition Model).
+# class RSSM(nn.Module):
+#     """RSSM model for the model-base Dreamer agent.
 
-        Args:
-            prior (Tensor): the prior state.
-            recurrent_state (Tensor): the recurrent state of the recurrent model.
-            actions (Tensor): the actions taken by the agent.
+#     Args:
+#         recurrent_model (nn.Module): the recurrent model of the RSSM model described in
+#             [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+#         representation_model (nn.Module): the representation model composed by a
+#             multi-layer perceptron to compute the stochastic part of the latent state.
+#             For more information see [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+#         transition_model (nn.Module): the transition model described in
+#             [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+#             The model is composed by a multi-layer perceptron to predict the stochastic part of the latent state.
+#         distribution_config (Dict[str, Any]): the configs of the distributions.
+#         discrete (int, optional): the size of the Categorical variables.
+#             Defaults to 32.
+#         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
+#             distribution over states, i.e. given some logits `l` and probabilities `p = softmax(l)`,
+#             then `p = (1 - self.unimix) * p + self.unimix * unif`, where `unif = `1 / self.discrete`.
+#             Defaults to 0.01.
+#     """
 
-        Returns:
-            The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
-            The recurrent state (Tensor).
-        """
-        recurrent_state = self.recurrent_model(recurrent_state, prior, actions)
-        _, imagined_prior = self._transition(recurrent_state)
-        return imagined_prior, recurrent_state
+#     def __init__(
+#             self,
+#             recurrent_model: RecurrentModel,
+#             representation_model: nn.Module,
+#             transition_model: nn.Module,
+#             distribution_config: Dict[str, Any],
+#             discrete: int = 32,
+#             unimix: float = 0.01,
+#             learnable_initial_recurrent_state: bool = True,
+#     ) -> None:
+#         super().__init__()
+#         self.recurrent_model = recurrent_model
+#         self.representation_model = representation_model
+#         self.transition_model = transition_model
+#         self.distribution_config = distribution_config
+#         self.discrete = discrete
+#         self.unimix = unimix
+#         if learnable_initial_recurrent_state:
+#             self.initial_recurrent_state = nn.Parameter(
+#                 torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+#             )
+#         else:
+#             self.register_buffer(
+#                 "initial_recurrent_state", torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+#             )
+
+#     def get_initial_states(self, batch_shape: Union[Sequence[int], torch.Size]) -> Tuple[Tensor, Tensor]:
+#         initial_recurrent_state = torch.tanh(self.initial_recurrent_state).expand(*batch_shape, -1)
+#         initial_posterior = self._transition(initial_recurrent_state, sample_state=False)[1]
+#         return initial_recurrent_state, initial_posterior
+
+#     def dynamic(
+#             self, posterior: Tensor, recurrent_state: Tensor, action: Tensor, embedded_obs: Tensor, is_first: Tensor
+#     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+#         """
+#         Perform one step of the dynamic learning:
+#             Recurrent model: compute the recurrent state from the previous latent space, the action taken by the agent,
+#                 i.e., it computes the deterministic state (or ht).
+#             Transition model: predict the prior from the recurrent output.
+#             Representation model: compute the posterior from the recurrent state and from
+#                 the embedded observations provided by the environment.
+#         For more information see [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551)
+#         and [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
+
+#         Args:
+#             posterior (Tensor): the stochastic state computed by the representation model (posterior). It is expected
+#                 to be of dimension `[stoch_size, self.discrete]`, which by default is `[32, 32]`.
+#             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
+#             action (Tensor): the action taken by the agent.
+#             embedded_obs (Tensor): the embedded observations provided by the environment.
+#             is_first (Tensor): if this is the first step in the episode.
+
+#         Returns:
+#             The recurrent state (Tensor): the recurrent state of the recurrent model.
+#             The posterior stochastic state (Tensor): computed by the representation model
+#             The prior stochastic state (Tensor): computed by the transition model
+#             The logits of the posterior state (Tensor): computed by the transition model from the recurrent state.
+#             The logits of the prior state (Tensor): computed by the transition model from the recurrent state.
+#             from the recurrent state and the embbedded observation.
+#         """
+#         action = (1 - is_first) * action
+
+#         initial_recurrent_state, initial_posterior = self.get_initial_states(recurrent_state.shape[:2])
+#         recurrent_state = (1 - is_first) * recurrent_state + is_first * initial_recurrent_state
+#         posterior = posterior.view(*posterior.shape[:-2], -1)
+#         posterior = (1 - is_first) * posterior + is_first * initial_posterior.view_as(posterior)
+
+#         recurrent_state = self.recurrent_model(recurrent_state, posterior, action)
+#         prior_logits, prior = self._transition(recurrent_state)
+#         posterior_logits, posterior = self._representation(recurrent_state, embedded_obs)
+#         return recurrent_state, posterior, prior, posterior_logits, prior_logits
+
+#     def _uniform_mix(self, logits: Tensor) -> Tensor:
+#         dim = logits.dim()
+#         if dim == 3:
+#             logits = logits.view(*logits.shape[:-1], -1, self.discrete)
+#         elif dim != 4:
+#             raise RuntimeError(f"The logits expected shape is 3 or 4: received a {dim}D tensor")
+#         if self.unimix > 0.0:
+#             probs = logits.softmax(dim=-1)
+#             uniform = torch.ones_like(probs) / self.discrete
+#             probs = (1 - self.unimix) * probs + self.unimix * uniform
+#             logits = probs_to_logits(probs)
+#         logits = logits.view(*logits.shape[:-2], -1)
+#         return logits
+
+#     def _representation(self, recurrent_state: Tensor, embedded_obs: Tensor) -> Tuple[Tensor, Tensor]:
+#         """
+#         Args:
+#             recurrent_state (Tensor): the recurrent state of the recurrent model, i.e.,
+#                 what is called h or deterministic state in
+#                 [https://arxiv.org/abs/1811.04551](https://arxiv.org/abs/1811.04551).
+#             embedded_obs (Tensor): the embedded real observations provided by the environment.
+
+#         Returns:
+#             logits (Tensor): the logits of the distribution of the posterior state.
+#             posterior (Tensor): the sampled posterior stochastic state.
+#         """
+#         logits: Tensor = self.representation_model(torch.cat((recurrent_state, embedded_obs), -1))
+#         logits = self._uniform_mix(logits)
+#         return logits, compute_stochastic_state(logits, discrete=self.discrete)
+
+#     def _transition(self, recurrent_out: Tensor, sample_state=True) -> Tuple[Tensor, Tensor]:
+#         """
+#         Args:
+#             recurrent_out (Tensor): the output of the recurrent model, i.e., the deterministic part of the latent space.
+#             sampler_state (bool): whether or not to sample the stochastic state.
+#                 Default to True
+
+#         Returns:
+#             logits (Tensor): the logits of the distribution of the prior state.
+#             prior (Tensor): the sampled prior stochastic state.
+#         """
+#         logits: Tensor = self.transition_model(recurrent_out)
+#         logits = self._uniform_mix(logits)
+#         return logits, compute_stochastic_state(logits, discrete=self.discrete, sample=sample_state)
+
+#     def imagination(self, prior: Tensor, recurrent_state: Tensor, actions: Tensor) -> Tuple[Tensor, Tensor]:
+#         """
+#         One-step imagination of the next latent state.
+#         It can be used several times to imagine trajectories in the latent space (Transition Model).
+
+#         Args:
+#             prior (Tensor): the prior state.
+#             recurrent_state (Tensor): the recurrent state of the recurrent model.
+#             actions (Tensor): the actions taken by the agent.
+
+#         Returns:
+#             The imagined prior state (Tuple[Tensor, Tensor]): the imagined prior state.
+#             The recurrent state (Tensor).
+#         """
+#         recurrent_state = self.recurrent_model(recurrent_state, prior, actions)
+#         _, imagined_prior = self._transition(recurrent_state)
+#         return imagined_prior, recurrent_state
 
 
 class Actor(nn.Module):
@@ -1068,7 +928,7 @@ class DreamerV3WorldModel(nn.Module):
             action_size=int(sum(actions_dim)),
             hidden_size=world_model_config.recurrent_model.dense_units,
             blocks=world_model_config.recurrent_model.blocks,
-            dyn_layer=world_model_config.recurrent_model.dyn_layer, 
+            dyn_layers=world_model_config.recurrent_model.dyn_layers, 
             norm_cls=norm_cls,
         )
         # recurrent_model(torch.zeros(16, 512), torch.zeros(16, 512), torch.zeros(16, 4))  # test
