@@ -31,7 +31,7 @@ harmony: False
 distribution:
   validate_args: false
   type: auto
-pixel: True
+
 env_config:
   screen_size: 64
 activation: 'silu'
@@ -60,22 +60,49 @@ critic:
   tau: 0.02
   bins: 255
   clip_gradients: 100.0
+
+pixel: True
 world_model:
-  discrete_size: 64
+  # grad_clip
+  clip_gradients: 1000.0
+  # stoch & classes
   stochastic_size: 32
-  kl_dynamic: 0.5
+  discrete_size: 64
+  
+  # loss_scales
+  kl_dynamic: 1.0
   kl_representation: 0.1
   kl_free_nats: 1.0
   kl_regularizer: 1.0
   continue_scale_factor: 1.0
-  clip_gradients: 1000.0
-  learnable_initial_recurrent_state: true
+
   encoder:
-    cnn_channels_multiplier: 64
-    mlp_layers: 3
+    # cnn
+    depth: 64
+    mults: [2, 3, 4, 4]
+    kernel: 5
+    stride: 1
+    padding: 'same'
+    # mlp
+    layers: 3
+    symlog: True
     dense_units: 1024
+  decoder:
+    # cnn
+    depth: 64
+    mults: [2, 3, 4, 4]
+    kernel: 5
+    stride: 1
+    padding: 'same'
+    blocks: 8
+    # mlp
+    layers: 3
+    dense_units: 1024
+    
+  # rssm (hidden_size in rssm; dense_units in others)
+  learnable_initial_recurrent_state: true
   recurrent_model:
-    block_size: 8
+    blocks: 8
     dyn_layer: 1
     recurrent_state_size: 8192  # 8 blocks of 512 hidden_size
     dense_units: 1024
@@ -83,10 +110,7 @@ world_model:
     hidden_size: 1024
   representation_model:
     hidden_size: 1024
-  observation_model:
-    cnn_channels_multiplier: 64
-    mlp_layers: 3
-    dense_units: 1024
+  # predictors (decoder is obs_predictor)
   reward_model:
     mlp_layers: 1
     dense_units: 1024
@@ -95,7 +119,14 @@ world_model:
     learnable: true
     mlp_layers: 1
     dense_units: 1024
-
+  # encoder:
+  #   cnn_channels_multiplier: 64
+  #   mlp_layers: 3
+  #   dense_units: 1024
+  # observation_model:
+  #   cnn_channels_multiplier: 64
+  #   mlp_layers: 3
+  #   dense_units: 1024
 gamma: 0.996996996996997
 lmbda: 0.95
 horizon: 15

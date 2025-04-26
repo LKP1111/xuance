@@ -41,222 +41,391 @@ from xuance.torch.utils import (
 from xuance.torch.utils.operations import trunc_normal_init_weights
 
 
-class CNNEncoder(nn.Module):
-    """The Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
-    kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.Norm`
-    is used after the convolution. This 4-stages model assumes that the image
-    is a 64x64 and it ends with a resolution of 4x4. If more than one image is to be encoded, then those will
-    be concatenated on the channel dimension and fed to the encoder.
-
-    Args:
-        input_channels (Sequence[int]): the input channels, one for each image observation to encode.
-        image_size (Tuple[int, int]): the image size as (Height,Width).
-        channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
-            will be [1, 2, 4, 8] * `channels_multiplier`.
-        norm_cls (Callable[..., nn.Module]): the norm to apply after the input projection.
-            Defaults to RMSNorm.
-        activation (ModuleType, optional): the activation function.
-            Defaults to nn.SiLU.
-        stages (int, optional): how many stages for the CNN.
-    """
-
+class Encoder(nn.Module):
     def __init__(
             self,
-            input_channels: Sequence[int],
-            image_size: Tuple[int, int],
-            channels_multiplier: int,
-            norm_cls: Callable[..., nn.Module] = RMSNormChannelLast,
-            activation: ModuleType = nn.SiLU,
-            stages: int = 4,
-    ) -> None:
+            # input_obs_shape
+            obs_shape: Sequence[int],
+            # encoder
+            depth: int =  64,
+            mults: Sequence[int] = [2, 3, 4, 4],
+            kernel: int = 5,
+            stride: int = 1,
+            padding: Union[str, int] = 'same',
+            layers: int = 3,
+            symlog: bool = True,
+            dense_units: int = 1024,
+            # others
+            pixel: bool = True):
         super().__init__()
-        self.input_dim = (sum(input_channels), *image_size)
-        self.model = nn.Sequential(
-            CNN(
-                input_channels=self.input_dim[0],
-                hidden_channels=(torch.tensor([2 ** i for i in range(stages)]) * channels_multiplier).tolist(),
-                cnn_layer=nn.Conv2d,
-                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": True},
-                activation=activation,
-                norm_layer=[norm_cls] * stages,
-                norm_args=[
-                    {"normalized_shape": (2 ** i) * channels_multiplier} for i in range(stages)
-                ],
-            ),
-            nn.Flatten(-3, -1),
-        )
-        with torch.no_grad():
-            self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
+        # store for forward
+        self.obs_shape = obs_shape
+        self.symlog = symlog
+        self.pixel = pixel
+        # net_init
+        li = []
+        if not pixel:
+            # <=2d vec_obs
+            assert len(obs_shape) <= 2  
+            in_dim = int(np.prod(obs_shape))
+            for _ in range(layers):
+                li.append(nn.Linear(in_dim, dense_units))
+                li.append(RMSNorm(dense_units))
+                li.append(nn.SiLU())
+                in_dim = dense_units
+        else:
+            # 3d img_obs
+            assert len(obs_shape) == 3  
+            # channel first, gray or rgb
+            assert obs_shape[0] == 1 or obs_shape[0] == 3
+            in_dim = obs_shape[0]
+            depths = (np.array(mults) * depth).tolist()
+            for d in depths:
+                li.append(nn.Conv2d(in_dim, d, 
+                                    kernel_size=kernel, 
+                                    stride=stride,
+                                    padding=padding))
+                # v3_official_new: x = x.reshape((B, H // 2, 2, W // 2, 2, C)).max((2, 4))
+                li.append(nn.MaxPool2d(2, 2))
+                li.append(RMSNormChannelLast(d))
+                li.append(nn.SiLU())
+                in_dim = d
+        self.model = nn.Sequential(*li)
 
-    def forward(self, obs: Tensor) -> Tensor:
-        return cnn_forward(self.model, obs, obs.shape[-3:], (-1,))
+    def forward(self, obs: Tensor):
+        # [~, 3, 64, 64] -> [B, 3, 64, 64]
+        batch_shape = obs.shape[:len(obs.shape) - len(self.obs_shape)]
+        obs = obs.view(-1, *self.obs_shape)
+        # sym_log & flatten for vec_obs
+        get_obs = sym_log if self.symlog and not self.pixel else lambda x: x
+        if not self.pixel and len(self.obs_shape) != 1:
+            obs = obs.flatten(len(batch_shape), -1)
+        out = self.model(get_obs(obs))
+        return out.reshape(*batch_shape, -1)  # [~, -1]
 
+# # encoder test (ok)
+# encoder = Encoder((3, 64, 64)).to("cuda:1").apply(trunc_normal_init_weights())
+# out = encoder(torch.zeros(16, 64, 3, 64, 64).to("cuda:1")).shape  # [16, 64, 4096]
 
-class CNNDecoder(nn.Module):
-    """The exact inverse of the `CNNEncoder` class. It assumes an initial resolution
-    of 4x4, and in 4 stages reconstructs the observation image to 64x64. If multiple
-    images are to be reconstructed, then it will create a dictionary with an entry
-    for every reconstructed image. No bias is used if a `nn.Norm` is used after
-    the `nn.Conv2dTranspose` layer.
+# encoder = Encoder((4, ), pixel=False).to("cuda:1").apply(trunc_normal_init_weights())
+# out = encoder(torch.zeros(16, 64, 4).to("cuda:1")).shape  # [16, 64, 1024]
 
-    Args:
-        output_channels (Sequence[int]): the output channels, one for every image observation.
-        channels_multiplier (int): the channels multiplier, same for the encoder network.
-        latent_state_size (int): the size of the latent state. Before applying the decoder,
-            a `nn.Linear` layer is used to project the latent state to a feature vector
-            of dimension [8 * `channels_multiplier`, 4, 4].
-        cnn_encoder_output_dim (int): the output of the image encoder. It should be equal to
-            8 * `channels_multiplier` * 4 * 4.
-        image_size (Tuple[int, int]): the final image size.
-        activation (nn.Module, optional): the activation function.
-            Defaults to nn.SiLU.
-        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to NormChannelLast.
-            Default to {"eps": 1e-3}.
-        stages (int): how many stages in the CNN decoder.
-    """
-
+class Decoder(nn.Module):
     def __init__(
             self,
-            output_channels: Sequence[int],
-            channels_multiplier: int,
-            latent_state_size: int,
-            cnn_encoder_output_dim: int,
-            image_size: Tuple[int, int],
-            activation: nn.Module = nn.SiLU,
-            norm_cls: Callable[..., nn.Module] = RMSNormChannelLast,
-            stages: int = 4,
-    ) -> None:
+            # input_latent_size: deter + stoch; output_obs_shape
+            deter_size: int,  
+            stoch_size: int,  
+            obs_shape: Sequence[int],
+            # encoder
+            depth: int =  64,
+            mults: Sequence[int] = [2, 3, 4, 4],
+            kernel: int = 5,
+            stride: int = 1,
+            padding: Union[str, int] = 'same',
+            blocks: int = 8,
+            layers: int = 3,
+            dense_units: int = 1024,
+            # others
+            pixel: bool = True):
         super().__init__()
-        self.output_channels = output_channels
-        self.cnn_encoder_output_dim = cnn_encoder_output_dim
-        self.image_size = image_size
-        self.output_dim = (sum(output_channels), *image_size)
-        self.model = nn.Sequential(
-            nn.Linear(latent_state_size, cnn_encoder_output_dim),
-            nn.Unflatten(1, (-1, 4, 4)),
-            DeCNN(
-                input_channels=(2 ** (stages - 1)) * channels_multiplier,
-                hidden_channels=(
-                                        torch.tensor(
-                                            [2 ** i for i in reversed(range(stages - 1))]) * channels_multiplier
-                                ).tolist()
-                                + [self.output_dim[0]],
-                cnn_layer=nn.ConvTranspose2d,
-                layer_args=[
-                               {"kernel_size": 4, "stride": 2, "padding": 1, "bias": True}
-                               for _ in range(stages - 1)
-                           ]
-                           + [{"kernel_size": 4, "stride": 2, "padding": 1}],
-                activation=[activation for _ in range(stages - 1)] + [None],
-                norm_layer=[norm_cls for _ in range(stages - 1)] + [None],
-                norm_args=[
-                              {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
-                              for i in range(stages - 1)
-                          ]
-                          + [None],
-            ),
-        )
+        # store for forward
+        self.obs_shape = obs_shape
+        self.pixel = pixel
+        # net_init
+        li = []
+        if not pixel:
+            # <=2d vec_obs
+            assert len(obs_shape) <= 2  
+            in_dim = deter_size + stoch_size
+            for _ in range(layers):
+                li.append(nn.Linear(in_dim, dense_units))
+                li.append(RMSNorm(dense_units))
+                li.append(nn.SiLU())
+                in_dim = dense_units
+            li.append(nn.Linear(dense_units, int(np.prod(obs_shape))))
+        else:
+            # 3d img_obs
+            assert len(obs_shape) == 3  
+            # channel first, gray or rgb
+            assert obs_shape[0] == 1 or obs_shape[0] == 3
+            # calc the input shape of Conv2d: [256, 4, 4]
+            depths = (np.array(mults) * depth).tolist()
+            factor = 2 ** len(depths)
+            conv_in = [obs_shape[-1] // factor] * 2
+            self.shape = [depths[-1], *conv_in]  
+            # u: Conv2d input size; g: blocks
+            u, g = int(np.prod(self.shape)), blocks  # u = 4096, g = 8
+            # deter -> block linear -> shape of convt_in
+            self.bl = BlockLinear(deter_size, u, g)
+            # stoch -> linear -> shape of convt_in
+            self.l = nn.Sequential(
+                nn.Linear(stoch_size, dense_units * 2),
+                RMSNorm(dense_units * 2), nn.SiLU(),
+                nn.Linear(dense_units * 2, u)
+            )
+            # norm & act after deter + stoch
+            self.norm_act = nn.Sequential(RMSNormChannelLast(depths[-1]), nn.SiLU())
+            # conv
+            in_channel = self.shape[0]
+            for d in reversed([obs_shape[0],] + depths[:-1]):
+                li.append(nn.Conv2d(in_channel, d, 
+                                    kernel_size=kernel, 
+                                    stride=stride,
+                                    padding=padding))
+                # v3_official_new: x = x.repeat(2, -2).repeat(2, -3)
+                li.append(nn.UpsamplingNearest2d(scale_factor=2))  # unsampling last 2 dimensions
+                li.append(RMSNormChannelLast(d))
+                li.append(nn.SiLU())
+                in_channel = d
+        self.model = nn.Sequential(*li)
 
-    def forward(self, latent_states: Tensor) -> List[Tensor]:
-        cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
-        return torch.split(cnn_out, self.output_channels, -3)
+    def forward(self, deter, stoch):
+        batch_shape = deter.shape[:-1]
+        x0, x1 = deter, stoch  # x0: [1, 64, 8192]; x1: [1, 64, 32, 64]
+        x1 = x1.reshape((*x1.shape[:-2], -1))
+        x0 = x0.reshape((-1, x0.shape[-1]))  # [64, 8192]
+        x1 = x1.reshape((-1, x1.shape[-1]))  # [64, 2048]
+        if not self.pixel:
+            obs = self.model(torch.cat([x0, x1], dim=-1))
+        else:
+            # deter -> block linear -> shape of conv_in
+            x0 = self.bl(x0)  # -> [64, 4096]
+            x0 = x0.view(-1, *self.shape)
+            # stoch -> linear -> shape of conv_in
+            x1 = self.l(x1).view(-1, *self.shape)
+            x = self.norm_act(x0 + x1)
+            # convt
+            obs = self.model(x)
+        return obs.reshape(*batch_shape, *self.obs_shape)  # [~, *obs_shape]
 
+# # decoder test (ok)
+# decoder = Decoder(8192, 2048, (3, 64, 64)).to("cuda:1").apply(trunc_normal_init_weights())
+# out = decoder(torch.zeros(16, 64, 8192).to("cuda:1"), 
+#               torch.zeros(16, 64, 64, 32).to("cuda:1")).shape  # [16, 64, 3, 64, 64]
 
-class MLPEncoder(nn.Module):
-    """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.Norm` is used after the linear layer.
-    If more than one vector is to be encoded, then those will concatenated on the last
-    dimension before being fed to the encoder.
-
-    Args:
-        input_dims (Sequence[int]): the dimensions of every vector to encode.
-        mlp_layers (int, optional): how many mlp layers.
-            Defaults to 4.
-        dense_units (int, optional): the dimension of every mlp.
-            Defaults to 512.
-        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to Norm.
-        activation (ModuleType, optional): the activation function after every layer.
-            Defaults to nn.SiLU.
-        sym_log_inputs (bool, optional): whether to squash the input with the sym_log function.
-            Defaults to True.
-    """
-
-    def __init__(
-            self,
-            input_dims: Sequence[int],
-            mlp_layers: int = 4,
-            dense_units: int = 512,
-            norm_cls: Callable[..., nn.Module] = RMSNorm,
-            activation: ModuleType = nn.SiLU,
-            sym_log_inputs: bool = True,
-    ) -> None:
-        super().__init__()
-        self.input_dim = sum(input_dims)  # [4]
-        self.model = MLP(
-            self.input_dim,
-            None,
-            [dense_units] * mlp_layers,
-            activation=activation,
-            layer_args={"bias": True},
-            norm_layer=norm_cls,
-            norm_args={"normalized_shape": dense_units},
-        )
-        self.output_dim = dense_units
-        self.sym_log_inputs = sym_log_inputs  # True
-
-    def forward(self, obs: Tensor) -> Tensor:
-        # x = torch.cat([sym_log(obs[k]) if self.sym_log_inputs else obs[k] for k in self.keys], -1)
-        return self.model(sym_log(obs))
+# decoder = Decoder(8192, 2048, (4,), pixel=False).to("cuda:1").apply(trunc_normal_init_weights())
+# out = decoder(torch.zeros(16, 64, 8192).to("cuda:1"), 
+#               torch.zeros(16, 64, 64, 32).to("cuda:1")).shape  # [16, 64, 4]
 
 
-class MLPDecoder(nn.Module):
-    """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.Norm` is used after the linear layer.
-    If more than one vector is to be decoded, then it will create a dictionary with an entry
-    for every reconstructed vector.
 
-    Args:
-        keys (Sequence[str]): the keys representing the vector observations to decode.
-        output_dims (Sequence[int]): the dimensions of every vector to decode.
-        latent_state_size (int): the dimension of the latent state.
-        mlp_layers (int, optional): how many mlp layers.
-            Defaults to 4.
-        dense_units (int, optional): the dimension of every mlp.
-            Defaults to 512.
-        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to Norm.
-        activation (ModuleType, optional): the activation function after every layer.
-            Defaults to nn.SiLU.
-    """
+# class CNNEncoder(nn.Module):
+#     """The Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
+#     kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.Norm`
+#     is used after the convolution. This 4-stages model assumes that the image
+#     is a 64x64 and it ends with a resolution of 4x4. If more than one image is to be encoded, then those will
+#     be concatenated on the channel dimension and fed to the encoder.
 
-    def __init__(
-        self,
-        output_dims: Sequence[int],
-        latent_state_size: int,
-        mlp_layers: int = 4,
-        dense_units: int = 512,
-        activation: ModuleType = nn.SiLU,
-        norm_cls: Callable[..., nn.Module] = RMSNorm,
-        norm_args = {"normalized_shape": 512}
-    ) -> None:
-        super().__init__()
-        self.output_dims = output_dims
-        self.model = MLP(
-            latent_state_size,
-            None,
-            [dense_units] * mlp_layers,
-            activation=activation,
-            layer_args={"bias": True},
-            norm_layer=norm_cls,
-            norm_args=norm_args
-        )
-        self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
+#     Args:
+#         input_channels (Sequence[int]): the input channels, one for each image observation to encode.
+#         image_size (Tuple[int, int]): the image size as (Height,Width).
+#         channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
+#             will be [1, 2, 4, 8] * `channels_multiplier`.
+#         norm_cls (Callable[..., nn.Module]): the norm to apply after the input projection.
+#             Defaults to RMSNorm.
+#         activation (ModuleType, optional): the activation function.
+#             Defaults to nn.SiLU.
+#         stages (int, optional): how many stages for the CNN.
+#     """
 
-    def forward(self, latent_states: Tensor) -> Tensor:
-        x = self.model(latent_states)
-        return self.heads[0](x)  # revised to adapt to xuance
+#     def __init__(
+#             self,
+#             input_channels: Sequence[int],
+#             image_size: Tuple[int, int],
+#             channels_multiplier: int,
+#             norm_cls: Callable[..., nn.Module] = RMSNormChannelLast,
+#             activation: ModuleType = nn.SiLU,
+#             stages: int = 4,
+#     ) -> None:
+#         super().__init__()
+#         self.input_dim = (sum(input_channels), *image_size)
+#         self.model = nn.Sequential(
+#             CNN(
+#                 input_channels=self.input_dim[0],
+#                 hidden_channels=(torch.tensor([2 ** i for i in range(stages)]) * channels_multiplier).tolist(),
+#                 cnn_layer=nn.Conv2d,
+#                 layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": True},
+#                 activation=activation,
+#                 norm_layer=[norm_cls] * stages,
+#                 norm_args=[
+#                     {"normalized_shape": (2 ** i) * channels_multiplier} for i in range(stages)
+#                 ],
+#             ),
+#             nn.Flatten(-3, -1),
+#         )
+#         with torch.no_grad():
+#             self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
+
+#     def forward(self, obs: Tensor) -> Tensor:
+#         return cnn_forward(self.model, obs, obs.shape[-3:], (-1,))
+
+
+# class CNNDecoder(nn.Module):
+#     """The exact inverse of the `CNNEncoder` class. It assumes an initial resolution
+#     of 4x4, and in 4 stages reconstructs the observation image to 64x64. If multiple
+#     images are to be reconstructed, then it will create a dictionary with an entry
+#     for every reconstructed image. No bias is used if a `nn.Norm` is used after
+#     the `nn.Conv2dTranspose` layer.
+
+#     Args:
+#         output_channels (Sequence[int]): the output channels, one for every image observation.
+#         channels_multiplier (int): the channels multiplier, same for the encoder network.
+#         latent_state_size (int): the size of the latent state. Before applying the decoder,
+#             a `nn.Linear` layer is used to project the latent state to a feature vector
+#             of dimension [8 * `channels_multiplier`, 4, 4].
+#         cnn_encoder_output_dim (int): the output of the image encoder. It should be equal to
+#             8 * `channels_multiplier` * 4 * 4.
+#         image_size (Tuple[int, int]): the final image size.
+#         activation (nn.Module, optional): the activation function.
+#             Defaults to nn.SiLU.
+#         norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+#             Defaults to NormChannelLast.
+#             Default to {"eps": 1e-3}.
+#         stages (int): how many stages in the CNN decoder.
+#     """
+
+#     def __init__(
+#             self,
+#             output_channels: Sequence[int],
+#             channels_multiplier: int,
+#             latent_state_size: int,
+#             cnn_encoder_output_dim: int,
+#             image_size: Tuple[int, int],
+#             activation: nn.Module = nn.SiLU,
+#             norm_cls: Callable[..., nn.Module] = RMSNormChannelLast,
+#             stages: int = 4,
+#     ) -> None:
+#         super().__init__()
+#         self.output_channels = output_channels
+#         self.cnn_encoder_output_dim = cnn_encoder_output_dim
+#         self.image_size = image_size
+#         self.output_dim = (sum(output_channels), *image_size)
+#         self.model = nn.Sequential(
+#             nn.Linear(latent_state_size, cnn_encoder_output_dim),
+#             nn.Unflatten(1, (-1, 4, 4)),
+#             DeCNN(
+#                 input_channels=(2 ** (stages - 1)) * channels_multiplier,
+#                 hidden_channels=(
+#                                         torch.tensor(
+#                                             [2 ** i for i in reversed(range(stages - 1))]) * channels_multiplier
+#                                 ).tolist()
+#                                 + [self.output_dim[0]],
+#                 cnn_layer=nn.ConvTranspose2d,
+#                 layer_args=[
+#                                {"kernel_size": 4, "stride": 2, "padding": 1, "bias": True}
+#                                for _ in range(stages - 1)
+#                            ]
+#                            + [{"kernel_size": 4, "stride": 2, "padding": 1}],
+#                 activation=[activation for _ in range(stages - 1)] + [None],
+#                 norm_layer=[norm_cls for _ in range(stages - 1)] + [None],
+#                 norm_args=[
+#                               {"normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
+#                               for i in range(stages - 1)
+#                           ]
+#                           + [None],
+#             ),
+#         )
+
+#     def forward(self, latent_states: Tensor) -> List[Tensor]:
+#         cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
+#         return torch.split(cnn_out, self.output_channels, -3)
+
+
+# class MLPEncoder(nn.Module):
+#     """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
+#     N is specified by `mlp_layers`. No bias is used if a `nn.Norm` is used after the linear layer.
+#     If more than one vector is to be encoded, then those will concatenated on the last
+#     dimension before being fed to the encoder.
+
+#     Args:
+#         input_dims (Sequence[int]): the dimensions of every vector to encode.
+#         mlp_layers (int, optional): how many mlp layers.
+#             Defaults to 4.
+#         dense_units (int, optional): the dimension of every mlp.
+#             Defaults to 512.
+#         norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+#             Defaults to Norm.
+#         activation (ModuleType, optional): the activation function after every layer.
+#             Defaults to nn.SiLU.
+#         sym_log_inputs (bool, optional): whether to squash the input with the sym_log function.
+#             Defaults to True.
+#     """
+
+#     def __init__(
+#             self,
+#             input_dims: Sequence[int],
+#             mlp_layers: int = 4,
+#             dense_units: int = 512,
+#             norm_cls: Callable[..., nn.Module] = RMSNorm,
+#             activation: ModuleType = nn.SiLU,
+#             sym_log_inputs: bool = True,
+#     ) -> None:
+#         super().__init__()
+#         self.input_dim = sum(input_dims)  # [4]
+#         self.model = MLP(
+#             self.input_dim,
+#             None,
+#             [dense_units] * mlp_layers,
+#             activation=activation,
+#             layer_args={"bias": True},
+#             norm_layer=norm_cls,
+#             norm_args={"normalized_shape": dense_units},
+#         )
+#         self.output_dim = dense_units
+#         self.sym_log_inputs = sym_log_inputs  # True
+
+#     def forward(self, obs: Tensor) -> Tensor:
+#         # x = torch.cat([sym_log(obs[k]) if self.sym_log_inputs else obs[k] for k in self.keys], -1)
+#         return self.model(sym_log(obs))
+
+
+# class MLPDecoder(nn.Module):
+#     """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
+#     N is specified by `mlp_layers`. No bias is used if a `nn.Norm` is used after the linear layer.
+#     If more than one vector is to be decoded, then it will create a dictionary with an entry
+#     for every reconstructed vector.
+
+#     Args:
+#         keys (Sequence[str]): the keys representing the vector observations to decode.
+#         output_dims (Sequence[int]): the dimensions of every vector to decode.
+#         latent_state_size (int): the dimension of the latent state.
+#         mlp_layers (int, optional): how many mlp layers.
+#             Defaults to 4.
+#         dense_units (int, optional): the dimension of every mlp.
+#             Defaults to 512.
+#         norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+#             Defaults to Norm.
+#         activation (ModuleType, optional): the activation function after every layer.
+#             Defaults to nn.SiLU.
+#     """
+
+#     def __init__(
+#         self,
+#         output_dims: Sequence[int],
+#         latent_state_size: int,
+#         mlp_layers: int = 4,
+#         dense_units: int = 512,
+#         activation: ModuleType = nn.SiLU,
+#         norm_cls: Callable[..., nn.Module] = RMSNorm,
+#         norm_args = {"normalized_shape": 512}
+#     ) -> None:
+#         super().__init__()
+#         self.output_dims = output_dims
+#         self.model = MLP(
+#             latent_state_size,
+#             None,
+#             [dense_units] * mlp_layers,
+#             activation=activation,
+#             layer_args={"bias": True},
+#             norm_layer=norm_cls,
+#             norm_args=norm_args
+#         )
+#         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
+
+#     def forward(self, latent_states: Tensor) -> Tensor:
+#         x = self.model(latent_states)
+#         return self.heads[0](x)  # revised to adapt to xuance
 
 
 class RecurrentModel(nn.Module):
@@ -270,7 +439,7 @@ class RecurrentModel(nn.Module):
         stoch_size (int): the size of the stochastic state.
         action_size (int): the size of the action.
         hidden_size (int): the number of dense units.
-        block_size (int): the number of blocks.
+        blocks (int): the number of blocks.
         dyn_layer (int): the number of dyn_layer (block mlp).
         activation_fn (nn.Module): the activation function.
             Default to SiLU.
@@ -284,13 +453,13 @@ class RecurrentModel(nn.Module):
             stoch_size: int,
             action_size: int,
             hidden_size: int,  # related to config.dense_units
-            block_size: int=8,
+            blocks: int=8,
             dyn_layer: int=1, 
             activation_fn: nn.Module = nn.SiLU,
             norm_cls: Callable[..., nn.Module] = RMSNorm,
     ) -> None:
         super().__init__()
-        self.g = block_size
+        self.g = blocks
         self.hidden_size = hidden_size
         self.deter_size = self.recurrent_state_size = deter_size
         self.stoch_size = stoch_size
@@ -898,7 +1067,7 @@ class DreamerV3WorldModel(nn.Module):
             stoch_size=stochastic_size,
             action_size=int(sum(actions_dim)),
             hidden_size=world_model_config.recurrent_model.dense_units,
-            block_size=world_model_config.recurrent_model.block_size,
+            blocks=world_model_config.recurrent_model.blocks,
             dyn_layer=world_model_config.recurrent_model.dyn_layer, 
             norm_cls=norm_cls,
         )
@@ -1023,9 +1192,9 @@ class DreamerV3WorldModel(nn.Module):
         ).to(config.device)
 
         if config.trunc_normal_init:
-            world_model.apply(trunc_normal_init_weights)
-            actor.apply(trunc_normal_init_weights)
-            critic.apply(trunc_normal_init_weights)
+            world_model.apply(trunc_normal_init_weights())
+            actor.apply(trunc_normal_init_weights())
+            critic.apply(trunc_normal_init_weights())
 
         player = PlayerDV3(  # encoder, rssm, actor
             copy.deepcopy(world_model.encoder),

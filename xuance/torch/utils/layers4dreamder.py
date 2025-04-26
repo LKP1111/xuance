@@ -644,11 +644,14 @@ class BlockLinear(nn.Module):
         ) -> None:
         super().__init__()
         assert input_size % blocks == 0 and output_size % blocks == 0
+        self.input_size = input_size
+        self.output_size = output_size
         self.blocks = blocks
+        self.bias_flag = bias
+        self.outscale = outscale
+
         self.in_blocks = input_size // blocks
         self.out_blocks = output_size // blocks
-        self.outscale = outscale
-        self.bias_flag = bias
         self.weight = nn.Parameter(
             torch.randn(blocks, self.in_blocks, self.out_blocks) * outscale
         )
@@ -668,6 +671,15 @@ class BlockLinear(nn.Module):
         if self.bias is not None:
             x = x + self.bias
         return x
+    
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}("
+            f"input_size={self.input_size}, "
+            f"output_size={self.output_size}, "
+            f"blocks={self.blocks}, "
+            f"bias={self.bias_flag})"
+        )
 
 
 class MultiEncoder(nn.Module):
@@ -806,6 +818,9 @@ class RMSNorm(nn.Module):
         if self.scale:
             x *= self.weight
         return x.to(dtype)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(normalized_shape={self.normalized_shape})"
 
 
 class RMSNormChannelLast(RMSNorm):
