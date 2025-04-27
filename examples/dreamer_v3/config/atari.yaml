@@ -32,8 +32,6 @@ distribution:
   validate_args: false
   type: auto
 
-env_config:
-  screen_size: 64
 activation: 'silu'
 norm: 'rms'
 
@@ -105,22 +103,20 @@ world_model:
     classes: 64
     blocks: 8
     dyn_layers: 1
-    hidden_size: 1024
     # transition_model; alias: prior
     img_layers: 2
-    hidden_size: 1024
     # representation_model; alias: posterior
     obs_layers: 1
-    hidden_size: 1024
     absolute: False  # if True, posterior will only calc from obs_embed, rather than concat of obs_embed and deter
+    hidden_size: 1024
   # predictors
-  reward_preditor:
-    mlp_layers: 1
-    dense_units: 1024
+  reward_predictor:
     bins: 255
+    layers: 1
+    dense_units: 1024
   discount_predictor:
     learnable: true
-    mlp_layers: 1
+    layers: 1
     dense_units: 1024
 gamma: 0.996996996996997
 lmbda: 0.95

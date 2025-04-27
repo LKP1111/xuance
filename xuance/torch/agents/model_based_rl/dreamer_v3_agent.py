@@ -7,7 +7,7 @@ from xuance.torch import REGISTRY_Representation, REGISTRY_Policy
 from xuance.torch.utils import ActivationFunctions
 
 # '.': import from __init__
-from xuance.torch.representations.world_model import DreamerV3WorldModel, PlayerDV3
+from xuance.torch.representations.world_model import DreamerV3WorldModel
 from xuance.torch.policies import DreamerV3Policy
 
 import numpy as np
@@ -58,7 +58,7 @@ class DreamerV3Agent(OffPolicyAgent):
         self.learner = self._build_learner(self.config, self.policy, self.act_shape)
 
         # train_player & train_states; make sure train & test to be independent
-        self.train_player: PlayerDV3 = self.model.player
+        self.train_player = self.model.player
         self.train_player.init_states()
         self.train_states: List[np.ndarray] = [
             self.envs.buf_obs,  # obs: (envs, *obs_shape),
@@ -72,19 +72,21 @@ class DreamerV3Agent(OffPolicyAgent):
                               input_space: Optional[gym.spaces.Space],
                               config: Optional[Namespace]) -> DreamerV3WorldModel:
         # specify the type in order to use code completion
-        actions_dim = tuple(
+        act_shape = tuple(
             self.envs.action_space.shape
             if self.is_continuous else (
                 self.envs.action_space.nvec.tolist() if self.is_multidiscrete else [self.envs.action_space.n]
             )
         )
+        """chw obs_shape for representation"""
+        obs_shape = (x[-1], ) + (x := self.envs.observation_space.shape)[:2]
         input_representations = dict(
-            actions_dim=actions_dim,
+            obs_shape=obs_shape,
+            act_shape=act_shape,
             is_continuous=self.is_continuous,
             config=self.config,
-            obs_space=self.envs.observation_space
         )
-        representation = REGISTRY_Representation[representation_key](**input_representations)
+        representation = REGISTRY_Representation[representation_key](input_representations)
         if representation_key not in REGISTRY_Representation:
             raise AttributeError(f"{representation_key} is not registered in REGISTRY_Representation.")
         return representation
@@ -104,13 +106,13 @@ class DreamerV3Agent(OffPolicyAgent):
     def action(self,
                obs: np.ndarray,
                test_mode: Optional[bool] = False,
-               player: Optional[PlayerDV3] = None) -> np.ndarray:
+               player = None) -> np.ndarray:
         """Returns actions and values.
 
         Parameters:
             obs (np.ndarray): The observation.
             test_mode (Optional[bool]): True for testing without noises.
-            player (Optional[PlayerDV3]): The player whose action is taken, default is train_player.
+            player (TODO): The player whose action is taken, default is train_player.
 
         Returns:
             actions: The real_actions to be executed.

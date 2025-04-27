@@ -1,4 +1,5 @@
 import copy
+from argparse import Namespace
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium as gym
@@ -403,6 +404,80 @@ class RSSM(nn.Module):
 # print()
 
 
+class DreamerV3WorldModel(nn.Module):
+    def __init__(self, input_dict):
+        super().__init__()
+        models = DreamerV3WorldModel._build_model(**input_dict)
+        self.encoder, self.decoder, self.rssm, self.reward_predictor, self.discount_predictor = models
+
+    def _build_model(
+        obs_shape: Sequence[int], 
+        act_shape: Sequence[int],
+        is_continuous: bool, 
+        config: Namespace) -> Tuple[Encoder, Decoder, RSSM, nn.Module, nn.Module]:
+        config = dotdict(vars(config))
+        wm_config = config.world_model
+        encoder = Encoder(obs_shape=obs_shape, pixel=config.pixel, **wm_config.encoder)
+        decoder = Decoder(
+            deter_size=(t := wm_config.rssm)['deter_size'], 
+            stoch_size=t['stoch_size'] * t['classes'],
+            obs_shape=obs_shape, pixel=config.pixel,
+            **wm_config.decoder
+        )
+        embed_size = encoder(torch.zeros([1, ] + obs_shape)).shape[-1]
+        rssm = RSSM(
+            embed_size=embed_size,
+            action_size=int(np.prod(act_shape)),
+            unimix=config.unimix,
+            **wm_config.rssm
+        )
+        # type(class_name, base_classes_tuple, attributes_dict)
+        NamedSeq = lambda name, *layers: type(
+            name,
+            (nn.Sequential,),
+            {'_get_name': lambda self: name}
+        )(*layers)
+        latent_size = (t := wm_config.rssm)['deter_size'] + t['stoch_size'] * t['classes']
+        li, in_dim, dense_units = ['RewardPredictor'], latent_size, wm_config.reward_predictor.dense_units
+        for _ in range(wm_config.reward_predictor.layers):
+            li, in_dim = li + [
+                nn.Linear(in_dim, dense_units),
+                RMSNorm(dense_units),
+                nn.SiLU()
+            ], dense_units
+        li.append(nn.Linear(dense_units, wm_config.reward_predictor.bins))
+        reward_predictor = NamedSeq(*li)
+
+        li, in_dim, dense_units = ['DiscountPredictor'], latent_size, wm_config.discount_predictor.dense_units
+        for _ in range(wm_config.discount_predictor.layers):
+            li, in_dim = li + [
+                nn.Linear(in_dim, dense_units),
+                RMSNorm(dense_units),
+                nn.SiLU()
+            ], dense_units
+        li.append(nn.Linear(dense_units, 1))
+        discount_predictor = NamedSeq(*li)
+
+        models = [encoder, decoder, rssm, reward_predictor, discount_predictor]
+        return [x.apply(trunc_normal_init_weights()) for x in models]
+        
+        
+# # test _build_model (ok)
+# import argparse
+# from xuance.common import get_configs
+# file_dir = "/home/lkp/projects/xc_official/examples/dreamer_v3/config/atari.yaml"
+# configs_dict = get_configs(file_dir=file_dir)
+# configs = argparse.Namespace(**configs_dict)
+# input_dict = dict(
+#     obs_shape=[1, 64, 64], 
+#     act_shape=[2,], 
+#     is_continuous=False, 
+#     config=configs
+# )
+# DreamerV3WorldModel(input_dict)
+
+"""old---------------------------------"""
+
 # class RSSM(nn.Module):
 #     """RSSM model for the model-base Dreamer agent.
 
@@ -560,531 +635,532 @@ class RSSM(nn.Module):
 #         return imagined_prior, recurrent_state
 
 
-class Actor(nn.Module):
-    """
-    The wrapper class of the Dreamer_v2 Actor model.
+# class Actor(nn.Module):
+#     """
+#     The wrapper class of the Dreamer_v2 Actor model.
 
-    Args:
-        latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
-        actions_dim (Sequence[int]): the dimension in output of the actor.
-            The number of actions if continuous, the dimension of the action if discrete.
-        is_continuous (bool): whether or not the actions are continuous.
-        distribution_config (Dict[str, Any]): The configs of the distributions.
-        init_std (float): the amount to sum to the standard deviation.
-            Default to 0.0.
-        min_std (float): the minimum standard deviation for the actions.
-            Default to 1.0.
-        max_std (float): the maximum standard deviation for the actions.
-            Default to 1.0.
-        dense_units (int): the dimension of the hidden dense layers.
-            Default to 1024.
-        activation (int): the activation function to apply after the dense layers.
-            Default to nn.SiLU.
-        mlp_layers (int): the number of dense layers.
-            Default to 5.
-        norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to RMSNorm.
-        unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
-            distribution over actions, i.e. given some logits `l` and probabilities `p = softmax(l)`,
-            then `p = (1 - self.unimix) * p + self.unimix * unif`,
-            where `unif = `1 / self.discrete`.
-            Defaults to 0.01.
-        action_clip (float): the action clip parameter.
-            Default to 1.0.
-    """
+#     Args:
+#         latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
+#         actions_dim (Sequence[int]): the dimension in output of the actor.
+#             The number of actions if continuous, the dimension of the action if discrete.
+#         is_continuous (bool): whether or not the actions are continuous.
+#         distribution_config (Dict[str, Any]): The configs of the distributions.
+#         init_std (float): the amount to sum to the standard deviation.
+#             Default to 0.0.
+#         min_std (float): the minimum standard deviation for the actions.
+#             Default to 1.0.
+#         max_std (float): the maximum standard deviation for the actions.
+#             Default to 1.0.
+#         dense_units (int): the dimension of the hidden dense layers.
+#             Default to 1024.
+#         activation (int): the activation function to apply after the dense layers.
+#             Default to nn.SiLU.
+#         mlp_layers (int): the number of dense layers.
+#             Default to 5.
+#         norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
+#             Defaults to RMSNorm.
+#         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
+#             distribution over actions, i.e. given some logits `l` and probabilities `p = softmax(l)`,
+#             then `p = (1 - self.unimix) * p + self.unimix * unif`,
+#             where `unif = `1 / self.discrete`.
+#             Defaults to 0.01.
+#         action_clip (float): the action clip parameter.
+#             Default to 1.0.
+#     """
 
-    def __init__(
-            self,
-            latent_state_size: int,
-            actions_dim: Sequence[int],
-            is_continuous: bool,
-            distribution_config: Dict[str, Any],
-            init_std: float = 0.0,
-            min_std: float = 1.0,
-            max_std: float = 1.0,
-            dense_units: int = 1024,
-            activation: nn.Module = nn.SiLU,
-            mlp_layers: int = 5,
-            norm_cls: Callable[..., nn.Module] = RMSNorm,
-            unimix: float = 0.01,
-            action_clip: float = 1.0,
-    ) -> None:
-        super().__init__()
-        self.distribution_config = distribution_config
-        self.distribution = distribution_config.get("type", "auto").lower()
-        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "scaled_normal"):
-            raise ValueError(
-                "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `scaled_normal`. "
-                f"Found: {self.distribution}"
-            )
-        if self.distribution == "discrete" and is_continuous:
-            raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
-        if self.distribution == "auto":
-            if is_continuous:
-                self.distribution = "scaled_normal"
-            else:
-                self.distribution = "discrete"
-        self.model = MLP(
-            input_dims=latent_state_size,
-            output_dim=None,
-            hidden_sizes=[dense_units] * mlp_layers,
-            activation=activation,
-            flatten_dim=None,
-            layer_args={"bias": True},
-            norm_layer=norm_cls,
-            norm_args={
-                "normalized_shape": dense_units,
-            },
-        )
-        if is_continuous:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
-        else:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
-        self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
-        self.init_std = init_std
-        self.min_std = min_std
-        self.max_std = max_std
-        self._unimix = unimix
-        self._action_clip = action_clip
+#     def __init__(
+#             self,
+#             latent_state_size: int,
+#             actions_dim: Sequence[int],
+#             is_continuous: bool,
+#             distribution_config: Dict[str, Any],
+#             init_std: float = 0.0,
+#             min_std: float = 1.0,
+#             max_std: float = 1.0,
+#             dense_units: int = 1024,
+#             activation: nn.Module = nn.SiLU,
+#             mlp_layers: int = 5,
+#             norm_cls: Callable[..., nn.Module] = RMSNorm,
+#             unimix: float = 0.01,
+#             action_clip: float = 1.0,
+#     ) -> None:
+#         super().__init__()
+#         self.distribution_config = distribution_config
+#         self.distribution = distribution_config.get("type", "auto").lower()
+#         if self.distribution not in ("auto", "normal", "tanh_normal", "discrete", "scaled_normal"):
+#             raise ValueError(
+#                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `scaled_normal`. "
+#                 f"Found: {self.distribution}"
+#             )
+#         if self.distribution == "discrete" and is_continuous:
+#             raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
+#         if self.distribution == "auto":
+#             if is_continuous:
+#                 self.distribution = "scaled_normal"
+#             else:
+#                 self.distribution = "discrete"
+#         self.model = MLP(
+#             input_dims=latent_state_size,
+#             output_dim=None,
+#             hidden_sizes=[dense_units] * mlp_layers,
+#             activation=activation,
+#             flatten_dim=None,
+#             layer_args={"bias": True},
+#             norm_layer=norm_cls,
+#             norm_args={
+#                 "normalized_shape": dense_units,
+#             },
+#         )
+#         if is_continuous:
+#             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
+#         else:
+#             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
+#         self.actions_dim = actions_dim
+#         self.is_continuous = is_continuous
+#         self.init_std = init_std
+#         self.min_std = min_std
+#         self.max_std = max_std
+#         self._unimix = unimix
+#         self._action_clip = action_clip
 
-    def forward(
-            self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
-    ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
-        """
-        Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
-        where * means any number of dimensions including None.
+#     def forward(
+#             self, state: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
+#     ) -> Tuple[Sequence[Tensor], Sequence[Distribution]]:
+#         """
+#         Call the forward method of the actor model and reorganizes the result with shape (batch_size, *, num_actions),
+#         where * means any number of dimensions including None.
 
-        Args:
-            state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
-            greedy (bool): whether or not to sample the actions.
-                Default to False.
-            mask (Dict[str, Tensor], optional): the mask to use on the actions.
-                Default to None.
+#         Args:
+#             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+#             greedy (bool): whether or not to sample the actions.
+#                 Default to False.
+#             mask (Dict[str, Tensor], optional): the mask to use on the actions.
+#                 Default to None.
 
-        Returns:
-            The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
-            The distribution of the actions
-        """
-        out: Tensor = self.model(state)
-        pre_dist: List[Tensor] = [head(out) for head in self.mlp_heads]
-        if self.is_continuous:
-            mean, std = torch.chunk(pre_dist[0], 2, -1)
-            if self.distribution == "tanh_normal":
-                mean = 5 * torch.tanh(mean / 5)
-                std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
-            elif self.distribution == "normal":
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(actions_dist, 1)
-            elif self.distribution == "scaled_normal":
-                std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
-                dist = Normal(torch.tanh(mean), std)
-                actions_dist = Independent(dist, 1)
-            else:
-                actions_dist = None
-            if not greedy:
-                actions = actions_dist.rsample()
-            else:
-                actions = actions_dist.mode
-            if self._action_clip > 0.0:
-                action_clip = torch.full_like(actions, self._action_clip)
-                actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
-            actions = [actions]
-            actions_dist = [actions_dist]
-        else:
-            actions_dist = []
-            actions = []
-            for logits in pre_dist:
-                actions_dist.append(OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits)))
-                if not greedy:
-                    actions.append(actions_dist[-1].rsample())
-                else:
-                    actions.append(actions_dist[-1].mode)
-        return tuple(actions), tuple(actions_dist)
+#         Returns:
+#             The tensor of the actions taken by the agent with shape (batch_size, *, num_actions).
+#             The distribution of the actions
+#         """
+#         out: Tensor = self.model(state)
+#         pre_dist: List[Tensor] = [head(out) for head in self.mlp_heads]
+#         if self.is_continuous:
+#             mean, std = torch.chunk(pre_dist[0], 2, -1)
+#             if self.distribution == "tanh_normal":
+#                 mean = 5 * torch.tanh(mean / 5)
+#                 std = F.softplus(std + self.init_std) + self.min_std
+#                 actions_dist = Normal(mean, std)
+#                 actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+#             elif self.distribution == "normal":
+#                 actions_dist = Normal(mean, std)
+#                 actions_dist = Independent(actions_dist, 1)
+#             elif self.distribution == "scaled_normal":
+#                 std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
+#                 dist = Normal(torch.tanh(mean), std)
+#                 actions_dist = Independent(dist, 1)
+#             else:
+#                 actions_dist = None
+#             if not greedy:
+#                 actions = actions_dist.rsample()
+#             else:
+#                 actions = actions_dist.mode
+#             if self._action_clip > 0.0:
+#                 action_clip = torch.full_like(actions, self._action_clip)
+#                 actions = actions * (action_clip / torch.maximum(action_clip, torch.abs(actions))).detach()
+#             actions = [actions]
+#             actions_dist = [actions_dist]
+#         else:
+#             actions_dist = []
+#             actions = []
+#             for logits in pre_dist:
+#                 actions_dist.append(OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits)))
+#                 if not greedy:
+#                     actions.append(actions_dist[-1].rsample())
+#                 else:
+#                     actions.append(actions_dist[-1].mode)
+#         return tuple(actions), tuple(actions_dist)
 
-    def _uniform_mix(self, logits: Tensor) -> Tensor:
-        if self._unimix > 0.0:
-            probs = logits.softmax(dim=-1)
-            uniform = torch.ones_like(probs) / probs.shape[-1]
-            probs = (1 - self._unimix) * probs + self._unimix * uniform
-            logits = probs_to_logits(probs)
-        return logits
-
-
-class PlayerDV3(nn.Module):
-    """
-    The model of the Dreamer_v3 player.
-
-    Args:
-        encoder (MultiEncoder): the encoder.
-        rssm (RSSM): the RSSM model.
-        actor (Module): the actor.
-        actions_dim (Sequence[int]): the dimension of the actions.
-        num_envs (int): the number of environments.
-        stochastic_size (int): the size of the stochastic state.
-        recurrent_state_size (int): the size of the recurrent state.
-        transition_model (Module): the transition model.
-        discrete_size (int): the dimension of a single Categorical variable in the
-            stochastic state (prior or posterior).
-            Defaults to 32.
-        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
-            Default to None.
-         (bool, optional): whether to use the DecoupledRSSM model.
-    """
-
-    def __init__(
-            self,
-            encoder: MultiEncoder,
-            rssm: RSSM,
-            actor: Actor,
-            actions_dim: Sequence[int],
-            num_envs: int,
-            stochastic_size: int,
-            recurrent_state_size: int,
-            device: torch.device,
-            discrete_size: int = 32,
-            actor_type: Optional[str] = None,
-    ) -> None:
-        super().__init__()
-        self.encoder = encoder
-        self.rssm = rssm
-        self.actor = actor
-        self.actions_dim = actions_dim
-        self.num_envs = num_envs
-        self.stochastic_size = stochastic_size
-        self.recurrent_state_size = recurrent_state_size
-        self.device = device
-        self.discrete_size = discrete_size
-        self.actor_type = actor_type
-
-        self.actions, self.recurrent_state, self.stochastic_state = [None] * 3
-
-    @torch.no_grad()
-    def init_states(self,
-                    reset_envs: Optional[Sequence[int]] = None,
-                    num_envs: Optional[int] = None) -> None:
-        """Initialize the states and the actions for the ended environments.
-
-        Args:
-            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
-                If None, then all environments' states are reset.
-                Defaults to None.
-            num_envs (Optional[int]): the number of environments.
-                If None, then it will be self.num_envs  # prop added to deal with xuance test
-        """
-        num_envs = num_envs if num_envs else self.num_envs  # added to deal with xuance test
-        if reset_envs is None or len(reset_envs) == 0:  # reset all
-            self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state, stochastic_state = self.rssm.get_initial_states((1, num_envs))
-            self.stochastic_state = stochastic_state.reshape(1, num_envs, -1)
-        else:
-            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, len(reset_envs)))
-            self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
-
-    def get_actions(
-            self,
-            obs: Dict[str, Tensor],
-            greedy: bool = False,
-            mask: Optional[Dict[str, Tensor]] = None,
-    ) -> Sequence[Tensor]:
-        """
-        Return the greedy actions.
-
-        Args:
-            obs (Dict[str, Tensor]): the current observations.
-            greedy (bool): whether or not to sample the actions.
-                Default to False.
-            mask (Optional[Dict[str, Tensor]]): action mask
-        Returns:
-            The actions the agent has to perform.
-        """
-        embedded_obs = self.encoder(obs)
-        self.recurrent_state = self.rssm.recurrent_model(  # -> h1: [1: batch, 4: envs, 512]
-            self.recurrent_state, self.stochastic_state, self.actions
-        )
-        _, self.stochastic_state = self.rssm._representation(self.recurrent_state, embedded_obs)
-        self.stochastic_state = self.stochastic_state.view(
-            *self.stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
-        )
-        actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
-        self.actions = torch.cat(actions, -1)
-        return actions
+#     def _uniform_mix(self, logits: Tensor) -> Tensor:
+#         if self._unimix > 0.0:
+#             probs = logits.softmax(dim=-1)
+#             uniform = torch.ones_like(probs) / probs.shape[-1]
+#             probs = (1 - self._unimix) * probs + self._unimix * uniform
+#             logits = probs_to_logits(probs)
+#         return logits
 
 
-class WorldModel(nn.Module):
-    """
-    Wrapper class for the World model.
+# class PlayerDV3(nn.Module):
+#     """
+#     The model of the Dreamer_v3 player.
 
-    Args:
-        encoder (Module): the encoder.
-        rssm (RSSM): the rssm.
-        observation_model (Module): the observation model.
-        reward_model (Module): the reward model.
-        continue_model (Module, optional): the continue model.
-    """
+#     Args:
+#         encoder (MultiEncoder): the encoder.
+#         rssm (RSSM): the RSSM model.
+#         actor (Module): the actor.
+#         actions_dim (Sequence[int]): the dimension of the actions.
+#         num_envs (int): the number of environments.
+#         stochastic_size (int): the size of the stochastic state.
+#         recurrent_state_size (int): the size of the recurrent state.
+#         transition_model (Module): the transition model.
+#         discrete_size (int): the dimension of a single Categorical variable in the
+#             stochastic state (prior or posterior).
+#             Defaults to 32.
+#         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+#             Default to None.
+#          (bool, optional): whether to use the DecoupledRSSM model.
+#     """
 
-    def __init__(
-            self,
-            encoder,
-            rssm: RSSM,
-            observation_model,
-            reward_model,
-            continue_model,
-    ) -> None:
-        super().__init__()
-        self.encoder = encoder
-        self.rssm = rssm
-        self.observation_model = observation_model
-        self.reward_model = reward_model
-        self.continue_model = continue_model
+#     def __init__(
+#             self,
+#             encoder: MultiEncoder,
+#             rssm: RSSM,
+#             actor: Actor,
+#             actions_dim: Sequence[int],
+#             num_envs: int,
+#             stochastic_size: int,
+#             recurrent_state_size: int,
+#             device: torch.device,
+#             discrete_size: int = 32,
+#             actor_type: Optional[str] = None,
+#     ) -> None:
+#         super().__init__()
+#         self.encoder = encoder
+#         self.rssm = rssm
+#         self.actor = actor
+#         self.actions_dim = actions_dim
+#         self.num_envs = num_envs
+#         self.stochastic_size = stochastic_size
+#         self.recurrent_state_size = recurrent_state_size
+#         self.device = device
+#         self.discrete_size = discrete_size
+#         self.actor_type = actor_type
+
+#         self.actions, self.recurrent_state, self.stochastic_state = [None] * 3
+
+#     @torch.no_grad()
+#     def init_states(self,
+#                     reset_envs: Optional[Sequence[int]] = None,
+#                     num_envs: Optional[int] = None) -> None:
+#         """Initialize the states and the actions for the ended environments.
+
+#         Args:
+#             reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
+#                 If None, then all environments' states are reset.
+#                 Defaults to None.
+#             num_envs (Optional[int]): the number of environments.
+#                 If None, then it will be self.num_envs  # prop added to deal with xuance test
+#         """
+#         num_envs = num_envs if num_envs else self.num_envs  # added to deal with xuance test
+#         if reset_envs is None or len(reset_envs) == 0:  # reset all
+#             self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
+#             self.recurrent_state, stochastic_state = self.rssm.get_initial_states((1, num_envs))
+#             self.stochastic_state = stochastic_state.reshape(1, num_envs, -1)
+#         else:
+#             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
+#             self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, len(reset_envs)))
+#             self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
+
+#     def get_actions(
+#             self,
+#             obs: Dict[str, Tensor],
+#             greedy: bool = False,
+#             mask: Optional[Dict[str, Tensor]] = None,
+#     ) -> Sequence[Tensor]:
+#         """
+#         Return the greedy actions.
+
+#         Args:
+#             obs (Dict[str, Tensor]): the current observations.
+#             greedy (bool): whether or not to sample the actions.
+#                 Default to False.
+#             mask (Optional[Dict[str, Tensor]]): action mask
+#         Returns:
+#             The actions the agent has to perform.
+#         """
+#         embedded_obs = self.encoder(obs)
+#         self.recurrent_state = self.rssm.recurrent_model(  # -> h1: [1: batch, 4: envs, 512]
+#             self.recurrent_state, self.stochastic_state, self.actions
+#         )
+#         _, self.stochastic_state = self.rssm._representation(self.recurrent_state, embedded_obs)
+#         self.stochastic_state = self.stochastic_state.view(
+#             *self.stochastic_state.shape[:-2], self.stochastic_size * self.discrete_size
+#         )
+#         actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
+#         self.actions = torch.cat(actions, -1)
+#         return actions
 
 
-class DreamerV3WorldModel(nn.Module):
-    def __init__(self, actions_dim: Sequence[int],
-                 is_continuous: bool,
-                 config: Dict[str, Any],
-                 obs_space: gym.spaces.Dict):
-        super().__init__()
-        self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
-        self.config = config
-        self.obs_space = obs_space
-        """
-        for policy: world_model, actor, critic, target_critic
-        for agent: player (link to policy.world_model.~ & policy.actor)
-        """
-        if self.config.pixel:
-            self.obs_space = gym.spaces.Box(0, 255, ((self.obs_space.shape[2], ) + self.obs_space.shape[:2]), np.uint8)
-        self.world_model, self.actor, self.critic, self.target_critic, self.player = (
-            DreamerV3WorldModel._build_model(
-                self.actions_dim,
-                self.is_continuous,
-                self.config,
-                self.obs_space
-            )
-        )
+# class WorldModel(nn.Module):
+#     """
+#     Wrapper class for the World model.
 
-    @staticmethod
-    def _build_model(
-        actions_dim: Sequence[int],
-        is_continuous: bool,
-        config: Dict[str, Any],
-        obs_space: gym.spaces.Dict,
-    ) -> Tuple[WorldModel, Actor, nn.Module, nn.Module, PlayerDV3]:
-        # world_model, actor, critic, target_critic, player
-        """Build the models
+#     Args:
+#         encoder (Module): the encoder.
+#         rssm (RSSM): the rssm.
+#         observation_model (Module): the observation model.
+#         reward_model (Module): the reward model.
+#         continue_model (Module, optional): the continue model.
+#     """
 
-        Args:
-            actions_dim (Sequence[int]): the dimension of the actions.
-            is_continuous (bool): whether or not the actions are continuous.
-            config (DictConfig): the configs of DreamerV3.
-            obs_space (Dict[str, Any]): the observation space.
+#     def __init__(
+#             self,
+#             encoder,
+#             rssm: RSSM,
+#             observation_model,
+#             reward_model,
+#             continue_model,
+#     ) -> None:
+#         super().__init__()
+#         self.encoder = encoder
+#         self.rssm = rssm
+#         self.observation_model = observation_model
+#         self.reward_model = reward_model
+#         self.continue_model = continue_model
 
-        Returns:
-            The world model (WorldModel): composed by the encoder, rssm, observation and
-            reward models and the continue model.
-            The actor (nn.Module).
-            The critic (nn.Module).
-            The target critic (nn.Module).
-        """
 
-        config = dotdict(vars(config))
-        world_model_config = config.world_model
-        actor_config = config.actor
-        critic_config = config.critic
+# class DreamerV3WorldModel(nn.Module):
+    # def __init__(self, 
+    #              actions_dim: Sequence[int],
+    #              is_continuous: bool,
+    #              config: Dict[str, Any],
+    #              obs_space: gym.spaces.Dict):
+    #     super().__init__()
+    #     self.actions_dim = actions_dim
+    #     self.is_continuous = is_continuous
+    #     self.config = config
+    #     self.obs_space = obs_space
+    #     """
+    #     for policy: world_model, actor, critic, target_critic
+    #     for agent: player (link to policy.world_model.~ & policy.actor)
+    #     """
+    #     if self.config.pixel:
+    #         self.obs_space = gym.spaces.Box(0, 255, ((self.obs_space.shape[2], ) + self.obs_space.shape[:2]), np.uint8)
+    #     self.world_model, self.actor, self.critic, self.target_critic, self.player = (
+    #         DreamerV3WorldModel._build_model(
+    #             self.actions_dim,
+    #             self.is_continuous,
+    #             self.config,
+    #             self.obs_space
+    #         )
+    #     )
+
+    # @staticmethod
+    # def _build_model(
+    #     actions_dim: Sequence[int],
+    #     is_continuous: bool,
+    #     config: Dict[str, Any],
+    #     obs_space: gym.spaces.Dict,
+    # ) -> Tuple[WorldModel, Actor, nn.Module, nn.Module, PlayerDV3]:
+    #     # world_model, actor, critic, target_critic, player
+    #     """Build the models
+
+    #     Args:
+    #         actions_dim (Sequence[int]): the dimension of the actions.
+    #         is_continuous (bool): whether or not the actions are continuous.
+    #         config (DictConfig): the configs of DreamerV3.
+    #         obs_space (Dict[str, Any]): the observation space.
+
+    #     Returns:
+    #         The world model (WorldModel): composed by the encoder, rssm, observation and
+    #         reward models and the continue model.
+    #         The actor (nn.Module).
+    #         The critic (nn.Module).
+    #         The target critic (nn.Module).
+    #     """
+
+    #     config = dotdict(vars(config))
+    #     world_model_config = config.world_model
+    #     actor_config = config.actor
+    #     critic_config = config.critic
         
-        """
-        v3_official new structure uses bias linear & rms_norm
-        differ from v3_official old structure: no bias linear & layer_norm
-        """
-        assert config.norm == 'rms'  # assert the structure related prop
-        norm_cls = RMSNorm
-        norm_cls_pixel = RMSNormChannelLast
+    #     """
+    #     v3_official new structure uses bias linear & rms_norm
+    #     differ from v3_official old structure: no bias linear & layer_norm
+    #     """
+    #     assert config.norm == 'rms'  # assert the structure related prop
+    #     norm_cls = RMSNorm
+    #     norm_cls_pixel = RMSNormChannelLast
 
-        """deter_size; stoch_size; model_state_size"""
-        # Sizes
-        recurrent_state_size = world_model_config.recurrent_model.recurrent_state_size
-        stochastic_size = world_model_config.stochastic_size * world_model_config.discrete_size
-        latent_state_size = stochastic_size + recurrent_state_size
-        # Define models
-        cnn_stages = int(np.log2(config.env_config.screen_size) - np.log2(4))  # 4
-        cnn_encoder = (
-            CNNEncoder(
-                input_channels=[int(np.prod(obs_space.shape[:-2]))],
-                image_size=obs_space.shape[-2:],
-                channels_multiplier=world_model_config.encoder.cnn_channels_multiplier,
-                norm_cls=norm_cls_pixel,
-                activation=nn.SiLU,
-                stages=cnn_stages,
-            )
-            if config.pixel else None
-        )
-        mlp_encoder = (
-            MLPEncoder(
-                input_dims=[obs_space.shape[0]],
-                mlp_layers=world_model_config.encoder.mlp_layers,
-                dense_units=world_model_config.encoder.dense_units,
-                activation=nn.SiLU,
-                norm_cls=norm_cls,
-            )
-            if not config.pixel else None
-        )
-        encoder = MultiEncoder(cnn_encoder, mlp_encoder).to(config.device)
+    #     """deter_size; stoch_size; model_state_size"""
+    #     # Sizes
+    #     recurrent_state_size = world_model_config.recurrent_model.recurrent_state_size
+    #     stochastic_size = world_model_config.stochastic_size * world_model_config.discrete_size
+    #     latent_state_size = stochastic_size + recurrent_state_size
+    #     # Define models
+    #     cnn_stages = int(np.log2(config.env_config.screen_size) - np.log2(4))  # 4
+    #     cnn_encoder = (
+    #         CNNEncoder(
+    #             input_channels=[int(np.prod(obs_space.shape[:-2]))],
+    #             image_size=obs_space.shape[-2:],
+    #             channels_multiplier=world_model_config.encoder.cnn_channels_multiplier,
+    #             norm_cls=norm_cls_pixel,
+    #             activation=nn.SiLU,
+    #             stages=cnn_stages,
+    #         )
+    #         if config.pixel else None
+    #     )
+    #     mlp_encoder = (
+    #         MLPEncoder(
+    #             input_dims=[obs_space.shape[0]],
+    #             mlp_layers=world_model_config.encoder.mlp_layers,
+    #             dense_units=world_model_config.encoder.dense_units,
+    #             activation=nn.SiLU,
+    #             norm_cls=norm_cls,
+    #         )
+    #         if not config.pixel else None
+    #     )
+    #     encoder = MultiEncoder(cnn_encoder, mlp_encoder).to(config.device)
 
-        recurrent_model = RecurrentModel(
-            deter_size=recurrent_state_size,
-            stoch_size=stochastic_size,
-            action_size=int(sum(actions_dim)),
-            hidden_size=world_model_config.recurrent_model.dense_units,
-            blocks=world_model_config.recurrent_model.blocks,
-            dyn_layers=world_model_config.recurrent_model.dyn_layers, 
-            norm_cls=norm_cls,
-        )
-        # recurrent_model(torch.zeros(16, 512), torch.zeros(16, 512), torch.zeros(16, 4))  # test
-        represention_model_input_size = encoder.output_dim
-        represention_model_input_size += recurrent_state_size
-        representation_model = MLP(
-            input_dims=represention_model_input_size,  # (h1, x1) -> z1
-            output_dim=stochastic_size,
-            hidden_sizes=[world_model_config.representation_model.hidden_size],  # post: obslayers: 1
-            activation=nn.SiLU,
-            layer_args={"bias": True},
-            flatten_dim=None,
-            norm_layer=norm_cls,
-            norm_args={"normalized_shape": world_model_config.representation_model.hidden_size}
-        )
-        transition_model = MLP(
-            input_dims=recurrent_state_size,
-            output_dim=stochastic_size,
-            hidden_sizes=[world_model_config.transition_model.hidden_size] * 2,  # prior: imglayers: 2
-            activation=nn.SiLU,
-            layer_args={"bias": True},
-            flatten_dim=None,
-            norm_layer=norm_cls,
-            norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
-        )
+    #     recurrent_model = RecurrentModel(
+    #         deter_size=recurrent_state_size,
+    #         stoch_size=stochastic_size,
+    #         action_size=int(sum(actions_dim)),
+    #         hidden_size=world_model_config.recurrent_model.dense_units,
+    #         blocks=world_model_config.recurrent_model.blocks,
+    #         dyn_layers=world_model_config.recurrent_model.dyn_layers, 
+    #         norm_cls=norm_cls,
+    #     )
+    #     # recurrent_model(torch.zeros(16, 512), torch.zeros(16, 512), torch.zeros(16, 4))  # test
+    #     represention_model_input_size = encoder.output_dim
+    #     represention_model_input_size += recurrent_state_size
+    #     representation_model = MLP(
+    #         input_dims=represention_model_input_size,  # (h1, x1) -> z1
+    #         output_dim=stochastic_size,
+    #         hidden_sizes=[world_model_config.representation_model.hidden_size],  # post: obslayers: 1
+    #         activation=nn.SiLU,
+    #         layer_args={"bias": True},
+    #         flatten_dim=None,
+    #         norm_layer=norm_cls,
+    #         norm_args={"normalized_shape": world_model_config.representation_model.hidden_size}
+    #     )
+    #     transition_model = MLP(
+    #         input_dims=recurrent_state_size,
+    #         output_dim=stochastic_size,
+    #         hidden_sizes=[world_model_config.transition_model.hidden_size] * 2,  # prior: imglayers: 2
+    #         activation=nn.SiLU,
+    #         layer_args={"bias": True},
+    #         flatten_dim=None,
+    #         norm_layer=norm_cls,
+    #         norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
+    #     )
 
-        rssm_cls = RSSM
-        rssm = rssm_cls(
-            recurrent_model=recurrent_model.apply(init_weights),
-            representation_model=representation_model.apply(init_weights),
-            transition_model=transition_model.apply(init_weights),
-            distribution_config=config.distribution,
-            discrete=world_model_config.discrete_size,
-            unimix=config.unimix,
-            learnable_initial_recurrent_state=config.world_model.learnable_initial_recurrent_state,
-        ).to(config.device)
+    #     rssm_cls = RSSM
+    #     rssm = rssm_cls(
+    #         recurrent_model=recurrent_model.apply(init_weights),
+    #         representation_model=representation_model.apply(init_weights),
+    #         transition_model=transition_model.apply(init_weights),
+    #         distribution_config=config.distribution,
+    #         discrete=world_model_config.discrete_size,
+    #         unimix=config.unimix,
+    #         learnable_initial_recurrent_state=config.world_model.learnable_initial_recurrent_state,
+    #     ).to(config.device)
 
-        cnn_decoder = (
-            CNNDecoder(
-                output_channels=[int(np.prod(obs_space.shape[:-2]))],
-                channels_multiplier=world_model_config.observation_model.cnn_channels_multiplier,
-                latent_state_size=latent_state_size,
-                cnn_encoder_output_dim=cnn_encoder.output_dim,
-                image_size=obs_space.shape[-2:],
-                activation=nn.SiLU,
-                norm_cls=norm_cls_pixel,
-                stages=cnn_stages,
-            )
-            if config.pixel else None
-        )
-        mlp_decoder = (
-            MLPDecoder(
-                output_dims=[obs_space.shape[0]],
-                latent_state_size=latent_state_size,
-                mlp_layers=world_model_config.observation_model.mlp_layers,
-                dense_units=world_model_config.observation_model.dense_units,
-                activation=nn.SiLU,
-                norm_cls=norm_cls,
-                norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
-            )
-            if not config.pixel else None
-        )
-        observation_model = MultiDecoder(cnn_decoder, mlp_decoder).to(config.device)
+    #     cnn_decoder = (
+    #         CNNDecoder(
+    #             output_channels=[int(np.prod(obs_space.shape[:-2]))],
+    #             channels_multiplier=world_model_config.observation_model.cnn_channels_multiplier,
+    #             latent_state_size=latent_state_size,
+    #             cnn_encoder_output_dim=cnn_encoder.output_dim,
+    #             image_size=obs_space.shape[-2:],
+    #             activation=nn.SiLU,
+    #             norm_cls=norm_cls_pixel,
+    #             stages=cnn_stages,
+    #         )
+    #         if config.pixel else None
+    #     )
+    #     mlp_decoder = (
+    #         MLPDecoder(
+    #             output_dims=[obs_space.shape[0]],
+    #             latent_state_size=latent_state_size,
+    #             mlp_layers=world_model_config.observation_model.mlp_layers,
+    #             dense_units=world_model_config.observation_model.dense_units,
+    #             activation=nn.SiLU,
+    #             norm_cls=norm_cls,
+    #             norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
+    #         )
+    #         if not config.pixel else None
+    #     )
+    #     observation_model = MultiDecoder(cnn_decoder, mlp_decoder).to(config.device)
 
-        reward_model = MLP(
-            input_dims=latent_state_size,
-            output_dim=world_model_config.reward_model.bins,
-            hidden_sizes=[world_model_config.reward_model.dense_units] * world_model_config.reward_model.mlp_layers,
-            activation=nn.SiLU,
-            layer_args={"bias": True},
-            flatten_dim=None,
-            norm_layer=norm_cls,
-            norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
-        ).to(config.device)
+    #     reward_model = MLP(
+    #         input_dims=latent_state_size,
+    #         output_dim=world_model_config.reward_model.bins,
+    #         hidden_sizes=[world_model_config.reward_model.dense_units] * world_model_config.reward_model.mlp_layers,
+    #         activation=nn.SiLU,
+    #         layer_args={"bias": True},
+    #         flatten_dim=None,
+    #         norm_layer=norm_cls,
+    #         norm_args={"normalized_shape": world_model_config.discount_model.dense_units}
+    #     ).to(config.device)
 
-        continue_model = MLP(
-            input_dims=latent_state_size,
-            output_dim=1,
-            hidden_sizes=[world_model_config.discount_model.dense_units] * world_model_config.discount_model.mlp_layers,
-            activation=nn.SiLU,
-            layer_args={"bias": True},
-            flatten_dim=None,
-            norm_layer=norm_cls,
-            norm_args={"normalized_shape": world_model_config.discount_model.dense_units},
-        ).to(config.device)
-        world_model = WorldModel(
-            encoder.apply(init_weights),
-            rssm,
-            observation_model.apply(init_weights),
-            reward_model.apply(init_weights),
-            continue_model.apply(init_weights),
-        )
+    #     continue_model = MLP(
+    #         input_dims=latent_state_size,
+    #         output_dim=1,
+    #         hidden_sizes=[world_model_config.discount_model.dense_units] * world_model_config.discount_model.mlp_layers,
+    #         activation=nn.SiLU,
+    #         layer_args={"bias": True},
+    #         flatten_dim=None,
+    #         norm_layer=norm_cls,
+    #         norm_args={"normalized_shape": world_model_config.discount_model.dense_units},
+    #     ).to(config.device)
+    #     world_model = WorldModel(
+    #         encoder.apply(init_weights),
+    #         rssm,
+    #         observation_model.apply(init_weights),
+    #         reward_model.apply(init_weights),
+    #         continue_model.apply(init_weights),
+    #     )
 
-        actor_cls = Actor
-        actor: Actor = actor_cls(
-            latent_state_size=latent_state_size,
-            actions_dim=actions_dim,
-            is_continuous=is_continuous,
-            init_std=actor_config.init_std,
-            min_std=actor_config.min_std,
-            dense_units=actor_config.dense_units,
-            activation=nn.SiLU,
-            mlp_layers=actor_config.mlp_layers,
-            distribution_config=config.distribution,
-            norm_cls=norm_cls,
-            unimix=config.unimix,
-            action_clip=actor_config.action_clip,
-        ).to(config.device)
+    #     actor_cls = Actor
+    #     actor: Actor = actor_cls(
+    #         latent_state_size=latent_state_size,
+    #         actions_dim=actions_dim,
+    #         is_continuous=is_continuous,
+    #         init_std=actor_config.init_std,
+    #         min_std=actor_config.min_std,
+    #         dense_units=actor_config.dense_units,
+    #         activation=nn.SiLU,
+    #         mlp_layers=actor_config.mlp_layers,
+    #         distribution_config=config.distribution,
+    #         norm_cls=norm_cls,
+    #         unimix=config.unimix,
+    #         action_clip=actor_config.action_clip,
+    #     ).to(config.device)
 
-        critic = MLP(
-            input_dims=latent_state_size,
-            output_dim=critic_config.bins,
-            hidden_sizes=[critic_config.dense_units] * critic_config.mlp_layers,
-            activation=nn.SiLU,
-            layer_args={"bias": True},
-            flatten_dim=None,
-            norm_layer=norm_cls,
-            norm_args={
-                "normalized_shape": critic_config.dense_units,
-            },
-        ).to(config.device)
+    #     critic = MLP(
+    #         input_dims=latent_state_size,
+    #         output_dim=critic_config.bins,
+    #         hidden_sizes=[critic_config.dense_units] * critic_config.mlp_layers,
+    #         activation=nn.SiLU,
+    #         layer_args={"bias": True},
+    #         flatten_dim=None,
+    #         norm_layer=norm_cls,
+    #         norm_args={
+    #             "normalized_shape": critic_config.dense_units,
+    #         },
+    #     ).to(config.device)
 
-        if config.trunc_normal_init:
-            world_model.apply(trunc_normal_init_weights())
-            actor.apply(trunc_normal_init_weights())
-            critic.apply(trunc_normal_init_weights())
+    #     if config.trunc_normal_init:
+    #         world_model.apply(trunc_normal_init_weights())
+    #         actor.apply(trunc_normal_init_weights())
+    #         critic.apply(trunc_normal_init_weights())
 
-        player = PlayerDV3(  # encoder, rssm, actor
-            copy.deepcopy(world_model.encoder),
-            copy.deepcopy(world_model.rssm),
-            copy.deepcopy(actor),
-            actions_dim,
-            config.parallels,
-            config.world_model.stochastic_size,
-            config.world_model.recurrent_model.recurrent_state_size,
-            config.device,
-            discrete_size=config.world_model.discrete_size,
-        )
-        target_critic = copy.deepcopy(critic)
-        # Tie weights between the agent and the player
-        for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
-            p.data = agent_p.data
-        for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
-            p.data = agent_p.data
-        for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
-            p.data = agent_p.data
-        return world_model, actor, critic, target_critic, player
+    #     player = PlayerDV3(  # encoder, rssm, actor
+    #         copy.deepcopy(world_model.encoder),
+    #         copy.deepcopy(world_model.rssm),
+    #         copy.deepcopy(actor),
+    #         actions_dim,
+    #         config.parallels,
+    #         config.world_model.stochastic_size,
+    #         config.world_model.recurrent_model.recurrent_state_size,
+    #         config.device,
+    #         discrete_size=config.world_model.discrete_size,
+    #     )
+    #     target_critic = copy.deepcopy(critic)
+    #     # Tie weights between the agent and the player
+    #     for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    #         p.data = agent_p.data
+    #     for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
+    #         p.data = agent_p.data
+    #     for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+    #         p.data = agent_p.data
+    #     return world_model, actor, critic, target_critic, player
