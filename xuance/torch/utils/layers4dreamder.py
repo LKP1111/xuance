@@ -837,3 +837,4 @@ class RMSNormChannelLast(RMSNorm):
         x = super().forward(x)
         x = x.permute(0, 3, 1, 2)
         return x.to(input_dtype)
+

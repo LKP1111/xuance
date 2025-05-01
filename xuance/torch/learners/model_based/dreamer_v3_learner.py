@@ -7,42 +7,45 @@ from xuance.torch.policies import DreamerV3Policy
 from xuance.torch.utils import kl_div, dotdict
 from argparse import Namespace
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
+from torch.cuda.amp import autocast, GradScaler
 
 
 class DreamerV3_Learner(Learner):
     def __init__(self,
-                 config: Namespace,
+                 config: dotdict,
                  policy: DreamerV3Policy,
                  action_shape: Union[int, Tuple[int, ...]]):
         super(DreamerV3_Learner, self).__init__(config, policy)
-        self.policy = policy  # for code completion
+        self.policy = t = policy  # for code completion
         self.action_shape = action_shape
 
         # config
-        self.config = dotdict(vars(config))
-        self.is_continuous = self.config.is_continuous
-        self.tau = self.config.critic.tau
-        self.gamma = self.config.gamma
-        self.soft_update_freq = self.config.critic.soft_update_freq
+        self.is_continuous = config.is_continuous
+        self.tau = config.soft_update_rate
+        self.gamma = config.gamma
+        self.soft_update_freq = config.soft_update_freq
 
-        self.kl_dynamic = self.config.world_model.kl_dynamic  # 0.5
-        self.kl_representation = self.config.world_model.kl_representation  # 0.1
-        self.kl_free_nats = self.config.world_model.kl_free_nats  # 1.0
-        self.kl_regularizer = self.config.world_model.kl_regularizer  # 1.0
-        self.continue_scale_factor = self.config.world_model.continue_scale_factor  # 1.0
+        self.kl_dynamic = config.loss_scales.kl_dynamic  # 0.5
+        self.kl_representation = config.loss_scales.kl_representation  # 0.1
+        self.kl_free_nats = config.loss_scales.kl_free_nats  # 1.0
+        self.kl_regularizer = config.loss_scales.kl_regularizer  # 1.0
+        self.continue_scale_factor = config.loss_scales.continue_scale_factor  # 1.0
 
-        model_parameters = list(self.policy.world_model.parameters())
-        if self.config.harmony:
+        world_model_li = [t.encoder, t.rssm, t.decoder, t.reward_predictor, t.discount_predictor]
+        model_parameters = sum([list(x.parameters()) for x in world_model_li], [])
+        if config.harmony:
             model_parameters += [
-                self.policy.harmonizer_s1.get_harmony(),
-                self.policy.harmonizer_s2.get_harmony(),
-                self.policy.harmonizer_s3.get_harmony()
+                policy.harmonizer_s1.get_harmony(),
+                policy.harmonizer_s2.get_harmony(),
+                policy.harmonizer_s3.get_harmony()
             ]
+        # AMP GradScaler
+        self.scaler = GradScaler()
         # optimizers
         self.optimizer = {
-            'model': torch.optim.Adam(model_parameters, self.config.learning_rate_model),
-            'actor': torch.optim.Adam(self.policy.actor.parameters(), self.config.learning_rate_actor),
-            'critic': torch.optim.Adam(self.policy.critic.parameters(), self.config.learning_rate_critic)
+            'model': torch.optim.Adam(model_parameters, config.learning_rate_model),
+            'actor': torch.optim.Adam(policy.actor.parameters(), config.learning_rate_actor),
+            'critic': torch.optim.Adam(policy.critic.parameters(), config.learning_rate_critic)
         }
 
         self.gradient_step = 0
@@ -50,20 +53,18 @@ class DreamerV3_Learner(Learner):
     def update(self, **samples):
         if self.gradient_step % self.soft_update_freq == 0:
             self.policy.soft_update(self.tau)
-        # [seq, batch, ~]  # checked
         obs = torch.as_tensor(samples['obs'], device=self.device, dtype=torch.float32)
         acts = torch.as_tensor(samples['acts'], device=self.device)
-        if not self.is_continuous:
-            # acts to one_hot [seq, batch, action_size]
-            acts = torch.nn.functional.one_hot(acts.long(), num_classes=self.action_shape).float()
         rews = torch.as_tensor(samples['rews'], device=self.device)
         terms = torch.as_tensor(samples['terms'], device=self.device)
         truncs = torch.as_tensor(samples['truncs'], device=self.device)  # no use
         is_first = torch.as_tensor(samples['is_first'], device=self.device)
         """
-        seq_shift
+        seq_shift (preprocess)
         (o1, a1 -> a0, r1, terms1, truncs1, is_first1)
         """
+        if not self.is_continuous:
+            acts = torch.nn.functional.one_hot(acts.long(), num_classes=self.action_shape).float()
         is_first[0, :] = torch.ones_like(is_first[0, :])
         acts = torch.cat((torch.zeros_like(acts[:1]), acts[:-1]), 0)  # bug fixed ones_like -> zeros_like
         cont = 1 - terms
@@ -79,7 +80,7 @@ class DreamerV3_Learner(Learner):
             Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
             Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
         )
-        free_nats = torch.full_like(dyn_loss, self.config.world_model.kl_free_nats)
+        free_nats = torch.full_like(dyn_loss, self.kl_free_nats)
         dyn_loss = torch.maximum(dyn_loss, free_nats)
         repr_loss = kl_div(  # post -> prior
             Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
@@ -116,7 +117,7 @@ class DreamerV3_Learner(Learner):
         out = self.policy.actor_critic_forward(posteriors, recurrent_states, terms)
         objective, discount, entropy = out['for_actor']
         qv, predicted_target_values, lambda_values = out['for_critic']
-        actor_loss = -torch.mean(discount[:-1].detach() * (objective + entropy.unsqueeze(dim=-1)[:-1]))
+        actor_loss = -torch.mean(discount.detach() * (objective + entropy))
 
         self.optimizer['actor'].zero_grad()
         actor_loss.backward()
@@ -125,9 +126,9 @@ class DreamerV3_Learner(Learner):
         self.optimizer['actor'].step()
 
         """critic"""
-        critic_loss = -qv.log_prob(lambda_values.detach())
-        critic_loss = critic_loss - qv.log_prob(predicted_target_values.detach())
-        critic_loss = torch.mean(critic_loss * discount[:-1].squeeze(-1))
+        critic_loss = -qv.log_prob(lambda_values.detach()) -qv.log_prob(predicted_target_values.detach())
+        critic_loss = torch.mean(discount.squeeze(-1).detach() * critic_loss)
+        # TODO replay loss
         self.optimizer['critic'].zero_grad()
         critic_loss.backward()
         if self.config.critic.clip_gradients is not None:
@@ -147,7 +148,7 @@ class DreamerV3_Learner(Learner):
 
             "actor_loss/actor_loss": actor_loss.item(),
             "actor_loss/reinforce_loss": objective.mean().item(),
-            "actor_loss/entropy_loss": entropy.unsqueeze(dim=-1)[:-1].mean().item(),
+            "actor_loss/entropy_loss": entropy.mean().item(),
 
             "critic_loss/critic_loss": critic_loss.item(),
             "critic_loss/lambda_values": lambda_values.mean().item(),

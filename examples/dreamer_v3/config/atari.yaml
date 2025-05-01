@@ -28,49 +28,46 @@ runner: "DRL"
 # world_model & actor_critic start (200m config)
 harmony: False
 
-distribution:
-  validate_args: false
-  type: auto
-
 activation: 'silu'
 norm: 'rms'
-
-actor:
-  ent_coef: 0.0003
-  min_std: 0.1
-  max_std: 1.0
-  init_std: 2.0
-  mlp_layers: 3
-  dense_units: 1024
-  clip_gradients: 100.0
-  unimix: 0.01
-  action_clip: 1.0
-  moments:
-    decay: 0.99
-    max: 1.0
-    percentile:
-      low: 0.05
-      high: 0.95
-critic:
-  mlp_layers: 3
-  dense_units: 1024
-  soft_update_freq: 1
-  tau: 0.02
-  bins: 255
-  clip_gradients: 100.0
-
 pixel: True
-world_model:
-  # grad_clip
-  clip_gradients: 1000.0
-  
-  # loss_scales
+
+# action_clip: 1.0
+loss_scales:
+  # kl
   kl_dynamic: 1.0
   kl_representation: 0.1
   kl_free_nats: 1.0
   kl_regularizer: 1.0
   continue_scale_factor: 1.0
+  # actor
+  ent_coef: 0.0003
 
+moments:
+  decay: 0.99
+  max: 1.0
+  percentile:
+    low: 0.05
+    high: 0.95
+
+actor:
+  layers: 3
+  dense_units: 1024
+  init_std: 2.0
+  min_std: 0.1
+  max_std: 1.0
+  unimix: 0.01
+  outscale: 0.01
+
+
+critic:
+  layers: 3
+  dense_units: 1024
+  bins: 255
+  outscale: 0.0
+
+
+world_model:
   encoder:
     # cnn
     depth: 64
@@ -82,6 +79,8 @@ world_model:
     layers: 3
     symlog: True
     dense_units: 1024
+    # weight_init scale
+    outscale: 1.0
   decoder:  # alias: obs_predictor
     # cnn
     depth: 64
@@ -93,13 +92,14 @@ world_model:
     # mlp
     layers: 3
     dense_units: 1024
+    # weight_init scale
+    outscale: 1.0
     
   # rssm (hidden_size in rssm; dense_units in others)
   rssm:  
     # recurrent_model; alias: gru, dynamic_model, sequence_model
-    learnable_init_state: False  # not implemented in v3_official_new
     deter_size: 8192  # 8 blocks of 512 hidden_size
-    stoch_size: 32  # stoch for cont_act; (stoch * classes) for disc_act
+    stoch_size: 32
     classes: 64
     blocks: 8
     dyn_layers: 1
@@ -109,21 +109,27 @@ world_model:
     obs_layers: 1
     absolute: False  # if True, posterior will only calc from obs_embed, rather than concat of obs_embed and deter
     hidden_size: 1024
+    unimix: 0.01
+    # weight_init scale
+    outscale: 1.0
   # predictors
-  reward_predictor:
+  reward_predictor:  # outscale: 0.0
     bins: 255
     layers: 1
     dense_units: 1024
-  discount_predictor:
-    learnable: true
+    # weight_init scale
+    outscale: 0.0
+  discount_predictor:  # outscale: 1.0
     layers: 1
     dense_units: 1024
+    # weight_init scale
+    outscale: 1.0
+
+soft_update_freq: 1  # soft_update per update
+soft_update_rate: 0.02
 gamma: 0.996996996996997
 lmbda: 0.95
 horizon: 15
-
-unimix: 0.01
-trunc_normal_init: True
 # world_model & actor_critic end
 
 seed: 1

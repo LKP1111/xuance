@@ -1,5 +1,6 @@
 import copy
 from argparse import Namespace
+from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium as gym
@@ -41,7 +42,6 @@ from xuance.torch.utils import (
 )
 from xuance.torch.utils.operations import trunc_normal_init_weights
 
-
 class Encoder(nn.Module):
     def __init__(
             self,
@@ -56,6 +56,7 @@ class Encoder(nn.Module):
             layers: int = 3,
             symlog: bool = True,
             dense_units: int = 1024,
+            outscale: float = 1.0,
             # others
             pixel: bool = True):
         super().__init__()
@@ -92,6 +93,8 @@ class Encoder(nn.Module):
                 li.append(nn.SiLU())
                 in_dim = d
         self.model = nn.Sequential(*li)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
 
     def forward(self, obs: Tensor):
         # [~, 3, 64, 64] -> [B, 3, 64, 64]
@@ -127,6 +130,7 @@ class Decoder(nn.Module):
             blocks: int = 8,
             layers: int = 3,
             dense_units: int = 1024,
+            outscale: float = 1.0,
             # others
             pixel: bool = True):
         super().__init__()
@@ -180,6 +184,8 @@ class Decoder(nn.Module):
                 li.append(nn.SiLU())
                 in_channel = d
         self.model = nn.Sequential(*li)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
 
     def forward(self, deter, stoch):
         batch_shape = deter.shape[:-1]
@@ -217,7 +223,6 @@ class RSSM(nn.Module):
             embed_size: int,  # calc right after encoder is created
             action_size: int,
             # recurrent_model
-            learnable_init_state: bool = False,
             deter_size: int = 8192, 
             stoch_size: int = 32,
             classes: int = 64,
@@ -229,13 +234,12 @@ class RSSM(nn.Module):
             # representation_model; alias: posterior
             obs_layers: int = 1,
             absolute: bool = False,
-            # unimix
-            unimix: float = 0.01
+            unimix: float = 0.01,
+            outscale: float = 1.0,
     ) -> None:
         super().__init__()
         """recurrent_model"""
         # store for forward
-        assert not learnable_init_state
         self.g = blocks
         self.hidden_size = hidden_size
         self.stoch_size = stoch_size
@@ -284,6 +288,8 @@ class RSSM(nn.Module):
         self.repr_model = nn.Sequential(*li)
         """hidden -> stoch * classes"""
         self.to_logits = nn.Linear(hidden_size, stoch_size * classes)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
 
     # recurrent_model_forward: h1, z1, a1 -> h2
     def forward(self, deter: Tensor, stoch: Tensor, action: Tensor) -> Tensor:
@@ -294,6 +300,7 @@ class RSSM(nn.Module):
         stoch = stoch.view(B, -1)
         action = action.view(B, -1)
         # action / max(1, |action|); action if |action| < 1 else 1; clip action out of [-1, 1]
+        # this is the only place using action in network, so action_clip here is ok
         action /= torch.max(torch.as_tensor(1.0), torch.abs(action)).detach()
         x1, x2, x3 = [self.dyn_model1[i]([deter, stoch, action][i]) for i in range(3)]
         
@@ -404,18 +411,181 @@ class RSSM(nn.Module):
 # print()
 
 
+class RewardPredictor(nn.Module):
+    def __init__(
+        self,
+        # input
+        latent_size: int,
+        # config
+        bins: int = 255,
+        layers: int = 1,
+        dense_units: int = 1024,
+        outscale: float = 0.0,
+    ) -> None:
+        super().__init__()
+        # store for forward
+        self.latent_size = latent_size
+        # net init
+        li, in_dim, dense_units = [], latent_size, dense_units
+        for _ in range(layers):
+            li, in_dim = li + [
+                nn.Linear(in_dim, dense_units),
+                RMSNorm(dense_units),
+                nn.SiLU()
+            ], dense_units
+        li.append(nn.Linear(dense_units, bins))
+        self.model = nn.Sequential(*li)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class DiscountPredictor(nn.Module):
+    def __init__(
+            self,
+            # input
+            latent_size: int,
+            # config
+            layers: int = 1,
+            dense_units: int = 1024,
+            outscale: float = 1.0,
+    ) -> None:
+        super().__init__()
+        # store for forward
+        self.latent_size = latent_size
+        # net init
+        li, in_dim, dense_units = [], latent_size, dense_units
+        for _ in range(layers):
+            li, in_dim = li + [
+                nn.Linear(in_dim, dense_units),
+                RMSNorm(dense_units),
+                nn.SiLU()
+            ], dense_units
+        li.append(nn.Linear(dense_units, 1))
+        self.model = nn.Sequential(*li)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class Actor(nn.Module):
+    def __init__(
+        self,
+        latent_size: int,
+        act_shape: Sequence[int],
+        is_continuous: bool,
+        # config
+        layers: int = 3,
+        dense_units: int = 1024,
+        init_std: float = 2.0,
+        min_std: float = 0.1,
+        max_std: float = 1.0,
+        unimix: float = 0.01,
+        outscale: float = 0.01,
+    ):
+        super().__init__()
+        # store for forward
+        self.latent_size = latent_size
+        self.act_shape = act_shape
+        self.is_continuous = is_continuous
+        self.unimix = unimix
+        self.init_std = init_std
+        self.min_std = min_std
+        self.max_std = max_std
+        # net init
+        li, in_dim, dense_units = [], latent_size, dense_units
+        for _ in range(layers):
+            li, in_dim = li + [
+                nn.Linear(in_dim, dense_units),
+                RMSNorm(dense_units),
+                nn.SiLU()
+            ], dense_units
+        out_dim = np.prod(act_shape) * (2 if is_continuous else 1)
+        li.append(nn.Linear(dense_units, out_dim))
+        self.model = nn.Sequential(*li)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
+
+    def forward(self, x, sample=True):
+        x = self.model(x)
+        if self.is_continuous:
+            # bounded normal
+            mean, std = torch.chunk(x, 2, -1)
+            std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
+            dist = Independent(Normal(torch.tanh(mean), std), 1)
+        else:
+            # categorical
+            dist = OneHotCategoricalStraightThrough(logits=self._uniform_mix(x))
+        act = dist.rsample() if sample else dist.mode
+        return act, dist
+
+    def _uniform_mix(self, logits: Tensor) -> Tensor:
+        if self.unimix > 0.0:
+            probs = logits.softmax(dim=-1)
+            uniform = torch.ones_like(probs) / probs.shape[-1]
+            probs = (1 - self.unimix) * probs + self.unimix * uniform
+            logits = probs_to_logits(probs)
+        return logits
+
+# # test actor (ok)
+# actor = Actor(8192 + 32 * 64, (18,), True)
+# act, dist = actor(torch.zeros(16, 64, 8192 + 32 * 64))
+# print(act.shape)  # [16, 64, 18]
+# print(dist)  # ~
+
+
+class Critic(nn.Module):
+    def __init__(
+            self,
+            # input
+            latent_size: int,
+            # config
+            layers: int = 3,
+            dense_units: int = 1024,
+            bins: int = 255,
+            outscale: float = 0.0,
+    ) -> None:
+        super().__init__()
+        # store for forward
+        self.latent_size = latent_size
+        # net init
+        li, in_dim, dense_units = [], latent_size, dense_units
+        for _ in range(layers):
+            li, in_dim = li + [
+                nn.Linear(in_dim, dense_units),
+                RMSNorm(dense_units),
+                nn.SiLU()
+            ], dense_units
+        li.append(nn.Linear(dense_units, bins))
+        self.model = nn.Sequential(*li)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
+
+    def forward(self, x):
+        return self.model(x)
+
+
 class DreamerV3WorldModel(nn.Module):
     def __init__(self, input_dict):
         super().__init__()
         models = DreamerV3WorldModel._build_model(**input_dict)
-        self.encoder, self.decoder, self.rssm, self.reward_predictor, self.discount_predictor = models
+        self.encoder, self.decoder, self.rssm, self.reward_predictor, self.discount_predictor = models[:-3]
+        self.actor, self.critic, self.target_critic = models[-3:]
 
+    @staticmethod
     def _build_model(
         obs_shape: Sequence[int], 
         act_shape: Sequence[int],
         is_continuous: bool, 
-        config: Namespace) -> Tuple[Encoder, Decoder, RSSM, nn.Module, nn.Module]:
-        config = dotdict(vars(config))
+        config: dotdict) -> Tuple[
+            Encoder, Decoder, RSSM,
+            RewardPredictor, DiscountPredictor,
+            Actor, Critic, Critic
+        ]:
         wm_config = config.world_model
         encoder = Encoder(obs_shape=obs_shape, pixel=config.pixel, **wm_config.encoder)
         decoder = Decoder(
@@ -424,57 +594,39 @@ class DreamerV3WorldModel(nn.Module):
             obs_shape=obs_shape, pixel=config.pixel,
             **wm_config.decoder
         )
-        embed_size = encoder(torch.zeros([1, ] + obs_shape)).shape[-1]
+        embed_size = encoder(torch.zeros([1, ] + list(obs_shape))).shape[-1]
         rssm = RSSM(
             embed_size=embed_size,
             action_size=int(np.prod(act_shape)),
-            unimix=config.unimix,
             **wm_config.rssm
         )
-        # type(class_name, base_classes_tuple, attributes_dict)
-        NamedSeq = lambda name, *layers: type(
-            name,
-            (nn.Sequential,),
-            {'_get_name': lambda self: name}
-        )(*layers)
         latent_size = (t := wm_config.rssm)['deter_size'] + t['stoch_size'] * t['classes']
-        li, in_dim, dense_units = ['RewardPredictor'], latent_size, wm_config.reward_predictor.dense_units
-        for _ in range(wm_config.reward_predictor.layers):
-            li, in_dim = li + [
-                nn.Linear(in_dim, dense_units),
-                RMSNorm(dense_units),
-                nn.SiLU()
-            ], dense_units
-        li.append(nn.Linear(dense_units, wm_config.reward_predictor.bins))
-        reward_predictor = NamedSeq(*li)
 
-        li, in_dim, dense_units = ['DiscountPredictor'], latent_size, wm_config.discount_predictor.dense_units
-        for _ in range(wm_config.discount_predictor.layers):
-            li, in_dim = li + [
-                nn.Linear(in_dim, dense_units),
-                RMSNorm(dense_units),
-                nn.SiLU()
-            ], dense_units
-        li.append(nn.Linear(dense_units, 1))
-        discount_predictor = NamedSeq(*li)
+        reward_predictor = RewardPredictor(latent_size=latent_size, **wm_config.reward_predictor)
+        discount_predictor = DiscountPredictor(latent_size=latent_size, **wm_config.discount_predictor)
 
-        models = [encoder, decoder, rssm, reward_predictor, discount_predictor]
-        return [x.apply(trunc_normal_init_weights()) for x in models]
+        actor = Actor(latent_size=latent_size, act_shape=act_shape, is_continuous=is_continuous, **config.actor)
+        critic = Critic(latent_size=latent_size, **config.critic)
+        target_critic = deepcopy(critic)
+
+        return encoder, decoder, rssm, reward_predictor, discount_predictor, actor, critic, target_critic
         
         
 # # test _build_model (ok)
 # import argparse
 # from xuance.common import get_configs
-# file_dir = "/home/lkp/projects/xc_official/examples/dreamer_v3/config/atari.yaml"
+# # file_dir = "/home/lkp/projects/xc_official/examples/dreamer_v3/config/atari.yaml"
+# file_dir = "/home/capybara/capyhome/LKP/projects/xuance_official/xuance/examples/dreamer_v3/config/atari.yaml"
 # configs_dict = get_configs(file_dir=file_dir)
 # configs = argparse.Namespace(**configs_dict)
 # input_dict = dict(
-#     obs_shape=[1, 64, 64], 
-#     act_shape=[2,], 
-#     is_continuous=False, 
+#     obs_shape=[1, 64, 64],
+#     act_shape=[2,],
+#     is_continuous=False,
 #     config=configs
 # )
-# DreamerV3WorldModel(input_dict)
+# models = DreamerV3WorldModel(input_dict)
+# print()
 
 """old---------------------------------"""
 

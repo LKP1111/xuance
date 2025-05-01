@@ -192,7 +192,7 @@ def trunc_normal_init_weights(fan_mode='fan_in', scale=1.0):
         if isinstance(m, RMSNorm) or isinstance(m, RMSNormChannelLast):
             m.weight.data.fill_(1.0)
         else:
-            # trunc_normal_init for all weights and zero_init for all bias
+            # trunc_normal_init * outscale for all weights and zero_init for all bias
             if hasattr(m, "weight") and hasattr(m.weight, "data"):
                 fan_in, fan_out = nn.init._calculate_fan_in_and_fan_out(m.weight.data)
                 fan = {

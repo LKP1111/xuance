@@ -11,7 +11,7 @@ def parse_args():
     parser.add_argument("--env-id", type=str, default="ALE/Pong-v5")
     parser.add_argument("--log-dir", type=str, default="./logs/Pong-v5/")
     parser.add_argument("--model-dir", type=str, default="./models/Pong-v5/")
-    parser.add_argument("--device", type=str, default="cuda:1")
+    parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--harmony", type=bool, default=False)
 
     # atari100k, ratio=0.25, gradient_step=25k
@@ -25,11 +25,26 @@ def parse_args():
     parser.add_argument("--benchmark", type=int, default=1)
     return parser.parse_args()
 
+import torch
+from collections import defaultdict
+def count_parameters(model: torch.nn.Module):
+    # 按子模块名字前缀累加参数数目
+    param_counts = defaultdict(int)
+    for name, param in model.named_parameters():
+        # name 形如 'encoder.conv1.weight' → top_name='encoder'
+        top_name = name.split('.')[0]
+        param_counts[top_name] += param.numel()
+
+    # 输出
+    total = sum(param_counts.values())
+    print(f"Total params: {total:,}")
+    for module_name, cnt in param_counts.items():
+        print(f"  {module_name:<16} {cnt:,}")
 
 if __name__ == '__main__':
     # print(sys.path)  # python path
-    import sys
-    sys.path.append('/home/lkp/projects/xc_official')
+    # import sys
+    # sys.path.append('/home/lkp/projects/xc_official')
     
     parser = parse_args()
     configs_dict = get_configs(file_dir="config/atari.yaml")
@@ -39,6 +54,8 @@ if __name__ == '__main__':
     set_seed(configs.seed)
     envs = make_envs(configs)
     Agent = DreamerV3Agent(config=configs, envs=envs)
+    
+    count_parameters(Agent.models)
 
     train_information = {"Deep learning toolbox": configs.dl_toolbox,
                          "Calculating device": configs.device,

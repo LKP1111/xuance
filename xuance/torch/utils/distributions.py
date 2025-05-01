@@ -345,7 +345,7 @@ class TwoHotEncodingDistribution:
         weight_above = dist_to_below / total
         target = (one_hot(below, len(self.bins)) * weight_below[..., None]
                   + one_hot(above, len(self.bins)) * weight_above[..., None]).squeeze(-2)
-        log_pred = self.logits - torch.logsumexp(self.logits, dim=-1, keepdims=True)
+        log_pred = self.logits - torch.logsumexp(self.logits, dim=-1, keepdims=True)  # log(softmax(logits))
         return (target * log_pred).sum(dim=self.dims)
 
 

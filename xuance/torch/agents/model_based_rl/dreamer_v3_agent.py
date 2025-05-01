@@ -1,10 +1,13 @@
+from random import sample
+from typing import Tuple
+
 import torch
 from copy import deepcopy
 from xuance.common import List, Union, SequentialReplayBuffer
 from xuance.environment import DummyVecEnv, SubprocVecEnv
 from xuance.torch.agents import OffPolicyAgent
 from xuance.torch import REGISTRY_Representation, REGISTRY_Policy
-from xuance.torch.utils import ActivationFunctions
+from xuance.torch.utils import ActivationFunctions, dotdict
 
 # '.': import from __init__
 from xuance.torch.representations.world_model import DreamerV3WorldModel
@@ -22,6 +25,8 @@ class DreamerV3Agent(OffPolicyAgent):
                  config: Namespace,
                  envs: Union[DummyVecEnv, SubprocVecEnv]):
         super(DreamerV3Agent, self).__init__(config, envs)
+        self.config = config = dotdict(vars(config))
+
         # special judge for atari env
         self.atari = True if self.config.env_name == "Atari" else False
 
@@ -49,7 +54,7 @@ class DreamerV3Agent(OffPolicyAgent):
         # REGISTRY & create: representation, policy, learner
         ActivationFunctions['silu'] = torch.nn.SiLU
         REGISTRY_Representation['DreamerV3WorldModel'] = DreamerV3WorldModel
-        self.model = self._build_representation(representation_key="DreamerV3WorldModel",
+        self.models = self._build_representation(representation_key="DreamerV3WorldModel",
                                                 config=None, input_space=None)
 
         REGISTRY_Policy["DreamerV3Policy"] = DreamerV3Policy
@@ -58,14 +63,20 @@ class DreamerV3Agent(OffPolicyAgent):
         self.learner = self._build_learner(self.config, self.policy, self.act_shape)
 
         # train_player & train_states; make sure train & test to be independent
-        self.train_player = self.model.player
-        self.train_player.init_states()
+        # self.train_player = self.models.player
+        # self.train_player.init_states()
+        self.deter_size = config.world_model.rssm.deter_size
+        self.stoch_size, self.classes = config.world_model.rssm.stoch_size, config.world_model.rssm.classes
+        self.deter = torch.zeros(self.envs.num_envs, self.deter_size).to(config.device)
+        self.stoch = torch.zeros(self.envs.num_envs, self.stoch_size, self.classes).to(config.device)
+        extra_shape = () if not self.is_continuous else self.act_shape
         self.train_states: List[np.ndarray] = [
             self.envs.buf_obs,  # obs: (envs, *obs_shape),
-            np.zeros((self.envs.num_envs, )),  # rews
-            np.zeros((self.envs.num_envs, )),  # terms
-            np.zeros((self.envs.num_envs, )),  # truncs
-            np.ones((self.envs.num_envs, ))  # is_first
+            np.zeros((self.envs.num_envs,) + extra_shape),  # real_acts
+            np.zeros(self.envs.num_envs),  # rews
+            np.zeros(self.envs.num_envs),  # terms
+            np.zeros(self.envs.num_envs),  # truncs
+            np.ones(self.envs.num_envs)  # is_first
         ]
 
     def _build_representation(self, representation_key: str,
@@ -79,7 +90,7 @@ class DreamerV3Agent(OffPolicyAgent):
             )
         )
         """chw obs_shape for representation"""
-        obs_shape = (x[-1], ) + (x := self.envs.observation_space.shape)[:2]
+        obs_shape = ((t := self.envs.observation_space.shape)[-1], ) + t[:2]
         input_representations = dict(
             obs_shape=obs_shape,
             act_shape=act_shape,
@@ -101,41 +112,52 @@ class DreamerV3Agent(OffPolicyAgent):
         return SequentialReplayBuffer(**input_buffer)
 
     def _build_policy(self) -> DreamerV3Policy:
-        return REGISTRY_Policy["DreamerV3Policy"](self.model, self.config)
+        return REGISTRY_Policy["DreamerV3Policy"](self.models, self.config)
 
-    def action(self,
-               obs: np.ndarray,
-               test_mode: Optional[bool] = False,
-               player = None) -> np.ndarray:
-        """Returns actions and values.
-
+    def observe_and_action(self,
+            obs: np.ndarray,
+            deter: torch.Tensor,
+            stoch: torch.Tensor,
+            prev_acts: np.ndarray,
+            is_first: np.ndarray,
+            test_mode: Optional[bool] = False) -> Tuple[np.ndarray, torch.Tensor, torch.Tensor]:
+        """Returns actions.
         Parameters:
             obs (np.ndarray): The observation.
+            deter (torch.Tensor): The deterministic state of world model
+            stoch (torch.Tensor): The stochastic state of world model
+            prev_acts (np.ndarray): The previous actions (real_acts for envs.step())
+            is_first (np.ndarray): is the obs the first obs of traj
             test_mode (Optional[bool]): True for testing without noises.
-            player (TODO): The player whose action is taken, default is train_player.
-
         Returns:
             actions: The real_actions to be executed.
         """
         if self.config.pixel:
             obs = obs.transpose(0, 3, 1, 2) / 255.0 - 0.5
-        player = player if player is not None else self.train_player
-        # actions_output = self.policy(observations)
-        # [envs, *obs_shape] -> [1: batch, envs, *obs_shape]
-        obs = torch.as_tensor(obs, device=self.device, dtype=torch.float32).unsqueeze(0)
+        # -> [envs, *obs_shape]
+        envs = obs.shape[0]
+        obs = torch.as_tensor(obs, device=self.device, dtype=torch.float32)
+        prev_acts = torch.as_tensor(prev_acts, device=self.device, dtype=torch.float32)
+        is_first = torch.as_tensor(is_first, device=self.device, dtype=torch.float32)
+        obs = obs.view(envs, *self.obs_shape)
+        if not self.is_continuous:
+            prev_acts = torch.nn.functional.one_hot(prev_acts.long(), num_classes=self.act_shape).float()
+        prev_acts = prev_acts.view(envs, np.prod(self.act_shape))
+        is_first = is_first.view(envs, 1)
         with torch.no_grad():
-            actions = player.get_actions(obs, greedy=test_mode, mask=None)[0][0]
+            embed = self.models.encoder(obs)
+            deter, stoch, _, _, _ = self.models.rssm.observe(deter, stoch, embed, prev_acts, is_first)
+            latent = torch.cat([deter, stoch.view(*deter.shape[:-1], -1)], -1)
+            acts, _ = self.policy.actor(latent, sample=not test_mode)
         # ont-hot -> real_actions
         if not self.is_continuous:
-            actions = actions.argmax(dim=1).detach().cpu().numpy()
-        else:  # [1, envs, *act_shape]
-            actions = actions.reshape(obs.shape[1], *self.act_shape).detach().cpu().numpy()
-            # action mapping in xuance.environment.utils.wrapper.XuanCeEnvWrapper.step
-            # actions = (actions + 1.0) * 0.5 * (self.actions_high - self.actions_low) + self.actions_low  # action_scaling
+            acts = acts.argmax(dim=-1).detach().cpu().numpy()
+        else:  # [envs, *act_shape]
+            acts = acts.reshape(obs.shape[0], *self.act_shape).detach().cpu().numpy()
         """
         for env_interaction: actions.shape, (envs, ) or (env, *act_shape)
         """
-        return actions
+        return acts, deter, stoch
 
     def train_epochs(self, n_epochs: int = 1):
         train_info = {}
@@ -152,7 +174,7 @@ class DreamerV3Agent(OffPolicyAgent):
 
     def train(self, train_steps):  # each train still uses old rssm_states until episode end
         return_info = {}
-        obs, rews, terms, truncs, is_first = self.train_states
+        obs, acts, rews, terms, truncs, is_first = self.train_states
 
         for _ in tqdm(range(train_steps)):
             step_info = {}
@@ -161,7 +183,7 @@ class DreamerV3Agent(OffPolicyAgent):
             if self.current_step < self.start_training:  # ramdom_sample before training
                 acts = np.array([self.envs.action_space.sample() for _ in range(self.envs.num_envs)])
             else:
-                acts = self.action(obs)
+                acts, self.deter, self.stoch = self.observe_and_action(obs, self.deter, self.stoch, acts, is_first)
             if self.atari:  # use truncs to train in xc_atari
                 terms = deepcopy(truncs)
             """(o1, a1, r1, term1, trunc1, is_first1), acts: real_acts"""
@@ -209,11 +231,13 @@ class DreamerV3Agent(OffPolicyAgent):
                 """reset DreamerV3 Player's states"""
                 obs[done_idxes] = np.stack([infos[idx]["reset_obs"] for idx in done_idxes])  # reset obs
                 self.envs.buf_obs[done_idxes] = obs[done_idxes]
-                rews[done_idxes] = np.zeros((len(done_idxes), ))
-                terms[done_idxes] = np.zeros((len(done_idxes), ))
-                truncs[done_idxes] = np.zeros((len(done_idxes), ))
+                rews[done_idxes] = np.zeros(len(done_idxes))
+                terms[done_idxes] = np.zeros(len(done_idxes))
+                truncs[done_idxes] = np.zeros(len(done_idxes))
                 is_first[done_idxes] = np.ones_like(terms[done_idxes])
-                self.train_player.init_states(done_idxes)
+
+                self.deter[done_idxes] = torch.zeros(len(done_idxes), self.deter_size).to(self.config.device)
+                self.stoch[done_idxes] = torch.zeros(len(done_idxes), self.stoch_size, self.classes).to(self.config.device)
             """
             start training 
             replay_ratio = self.gradient_step / self.current_step
@@ -227,15 +251,19 @@ class DreamerV3Agent(OffPolicyAgent):
                     self.log_infos(train_info, self.current_step)
                     return_info.update(train_info)
         # save the train_states for next train
-        self.train_states = [obs, rews, terms, truncs, is_first]
+        self.train_states = [obs, acts, rews, terms, truncs, is_first]
         return return_info
 
     def test(self, env_fn, test_episodes: int) -> list:
         test_envs = env_fn()
         num_envs = test_envs.num_envs
-        # copy the total network for test
-        test_player = deepcopy(self.train_player)
-        test_player.init_states(num_envs=num_envs)
+
+        # init latent state
+        deter = torch.zeros(num_envs, self.deter_size).to(self.config.device)
+        stoch = torch.zeros(num_envs, self.stoch_size, self.classes).to(self.config.device)
+        acts = np.zeros(num_envs, np.prod(self.act_shape))
+        is_first = np.ones(num_envs)
+
         videos, episode_videos = [[] for _ in range(num_envs)], []
         current_episode, scores, best_score = 0, [], -np.inf
         obs, infos = test_envs.reset()
@@ -243,12 +271,14 @@ class DreamerV3Agent(OffPolicyAgent):
             images = test_envs.render(self.config.render_mode)
             for idx, img in enumerate(images):
                 videos[idx].append(img)
+
         is_done = np.zeros(num_envs)
         while is_done.sum() < test_episodes:
             self.obs_rms.update(obs)
             obs = self._process_observation(obs)
-            acts = self.action(obs, test_mode=True, player=test_player)
+            acts, deter, stoch = self.observe_and_action(obs, deter, stoch, acts, is_first, True)
             next_obs, rews, terms, truncs, infos = test_envs.step(acts)
+            is_first = np.zeros_like(is_first)
             if self.config.render_mode == "rgb_array" and self.render:
                 images = test_envs.render(self.config.render_mode)
                 for idx, img in enumerate(images):
@@ -272,7 +302,11 @@ class DreamerV3Agent(OffPolicyAgent):
                         if self.config.test_mode:
                             print("Episode: %d, Score: %.2f" % (current_episode, infos[i]["episode_score"]))
             if len(done_idxes) > 0:
-                test_player.init_states(reset_envs=done_idxes, num_envs=num_envs)
+                deter[done_idxes] = torch.zeros(len(done_idxes), self.deter_size).to(self.config.device)
+                stoch[done_idxes] = torch.zeros(len(done_idxes), self.stoch_size, self.classes).to(self.config.device)
+                extra_shape = () if not self.is_continuous else self.act_shape
+                acts[done_idxes] = np.zeros((len(done_idxes),) + extra_shape)
+                is_first[done_idxes] = np.ones(len(done_idxes))
 
         if self.config.render_mode == "rgb_array" and self.render:
             # time, height, width, channel -> time, channel, height, width
