@@ -1,8 +1,10 @@
-from random import sample
 from typing import Tuple
 
 import torch
 from copy import deepcopy
+
+from torch.cuda.amp import autocast
+
 from xuance.common import List, Union, SequentialReplayBuffer
 from xuance.environment import DummyVecEnv, SubprocVecEnv
 from xuance.torch.agents import OffPolicyAgent
@@ -82,18 +84,9 @@ class DreamerV3Agent(OffPolicyAgent):
     def _build_representation(self, representation_key: str,
                               input_space: Optional[gym.spaces.Space],
                               config: Optional[Namespace]) -> DreamerV3WorldModel:
-        # specify the type in order to use code completion
-        act_shape = tuple(
-            self.envs.action_space.shape
-            if self.is_continuous else (
-                self.envs.action_space.nvec.tolist() if self.is_multidiscrete else [self.envs.action_space.n]
-            )
-        )
-        """chw obs_shape for representation"""
-        obs_shape = ((t := self.envs.observation_space.shape)[-1], ) + t[:2]
         input_representations = dict(
-            obs_shape=obs_shape,
-            act_shape=act_shape,
+            obs_shape=self.obs_shape,
+            act_shape=self.act_shape,
             is_continuous=self.is_continuous,
             config=self.config,
         )
@@ -145,10 +138,11 @@ class DreamerV3Agent(OffPolicyAgent):
         prev_acts = prev_acts.view(envs, np.prod(self.act_shape))
         is_first = is_first.view(envs, 1)
         with torch.no_grad():
-            embed = self.models.encoder(obs)
-            deter, stoch, _, _, _ = self.models.rssm.observe(deter, stoch, embed, prev_acts, is_first)
-            latent = torch.cat([deter, stoch.view(*deter.shape[:-1], -1)], -1)
-            acts, _ = self.policy.actor(latent, sample=not test_mode)
+            with autocast(dtype=torch.float16):
+                embed = self.models.encoder(obs)
+                deter, stoch, _, _, _ = self.models.rssm.observe(deter, stoch, embed, prev_acts, is_first)
+                latent = torch.cat([deter, stoch.view(*deter.shape[:-1], -1)], -1)
+                acts, _ = self.policy.actor(latent, sample=not test_mode)
         # ont-hot -> real_actions
         if not self.is_continuous:
             acts = acts.argmax(dim=-1).detach().cpu().numpy()

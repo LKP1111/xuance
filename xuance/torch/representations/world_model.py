@@ -204,6 +204,15 @@ class Decoder(nn.Module):
             x = self.norm_act(x0 + x1)
             # convt
             obs = self.model(x)
+            # for layer in self.model:
+            #     if isinstance(layer, nn.UpsamplingNearest2d):
+            #         x = x.to(dtype=torch.float32)
+            #         with autocast(dtype=torch.float32):
+            #             x = layer(x)
+            #         x = x.to(dtype=torch.bfloat16)
+            #     else:
+            #         x = layer(x)
+            # obs = x
         return obs.reshape(*batch_shape, *self.obs_shape)  # [~, *obs_shape]
 
 # # decoder test (ok)
@@ -294,9 +303,9 @@ class RSSM(nn.Module):
     # recurrent_model_forward: h1, z1, a1 -> h2
     def forward(self, deter: Tensor, stoch: Tensor, action: Tensor) -> Tensor:
         batch_shape = deter.shape[:-1]
-        B = np.prod(batch_shape)
         # linear part
-        deter = deter.view(B, -1)
+        deter = deter.view(-1, deter.shape[-1])
+        B = deter.shape[0]
         stoch = stoch.view(B, -1)
         action = action.view(B, -1)
         # action / max(1, |action|); action if |action| < 1 else 1; clip action out of [-1, 1]
@@ -581,11 +590,12 @@ class DreamerV3WorldModel(nn.Module):
         obs_shape: Sequence[int], 
         act_shape: Sequence[int],
         is_continuous: bool, 
-        config: dotdict) -> Tuple[
-            Encoder, Decoder, RSSM,
-            RewardPredictor, DiscountPredictor,
-            Actor, Critic, Critic
-        ]:
+        config: dotdict) -> List[Any]:
+        # -> Tuple[
+        #     Encoder, Decoder, RSSM,
+        #     RewardPredictor, DiscountPredictor,
+        #     Actor, Critic, Critic
+        # ]:
         wm_config = config.world_model
         encoder = Encoder(obs_shape=obs_shape, pixel=config.pixel, **wm_config.encoder)
         decoder = Decoder(
@@ -609,7 +619,7 @@ class DreamerV3WorldModel(nn.Module):
         critic = Critic(latent_size=latent_size, **config.critic)
         target_critic = deepcopy(critic)
 
-        return encoder, decoder, rssm, reward_predictor, discount_predictor, actor, critic, target_critic
+        return [encoder, decoder, rssm, reward_predictor, discount_predictor, actor, critic, target_critic]
         
         
 # # test _build_model (ok)

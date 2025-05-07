@@ -14,7 +14,15 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--harmony", type=bool, default=False)
 
-    # atari100k, ratio=0.25, gradient_step=25k
+    # atari100k, ratio=0.25, gradient_step=25k; config: 200m;
+    # Total params: 176,680,966;
+    #   no amp, f32: 22874MB, 4.88it/s
+    #   amp, bf16: 20748MiB, 4.3it/s;
+    #   amp, gradscaler, f16: 19854MiB, 5.4it/s
+    # after compile
+    #   no amp, f32: 23224MiB; : 5.8it/s
+    #   amp, bf16: 21074MiB, 3.45it/s;
+    #   amp, f16: 23492MiB, f16, 6.8it/s
     parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
     parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
     parser.add_argument("--replay-ratio", type=int, default=0.25)
@@ -28,14 +36,11 @@ def parse_args():
 import torch
 from collections import defaultdict
 def count_parameters(model: torch.nn.Module):
-    # 按子模块名字前缀累加参数数目
     param_counts = defaultdict(int)
     for name, param in model.named_parameters():
-        # name 形如 'encoder.conv1.weight' → top_name='encoder'
+        # name like 'encoder.conv1.weight' -> top_name='encoder'
         top_name = name.split('.')[0]
         param_counts[top_name] += param.numel()
-
-    # 输出
     total = sum(param_counts.values())
     print(f"Total params: {total:,}")
     for module_name, cnt in param_counts.items():

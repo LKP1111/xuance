@@ -15,7 +15,6 @@ class DreamerV3Policy(Module):  # checked
                  models: Module,
                  config: dotdict):
         super(DreamerV3Policy, self).__init__()
-        # TODO
         self.config = config
         self.device = config.device
         self.stoch_size = config.world_model.rssm.stoch_size
@@ -87,11 +86,7 @@ class DreamerV3Policy(Module):  # checked
         return (po, pr, pc, priors_logits, posts_logits,
                 deters, posts)
 
-    def actor_critic_forward(self,
-                             posts: Tensor,
-                             deters: Tensor,
-                             terms: Tensor) \
-            -> Dict[str, List[Any]]:
+    def actor_critic_forward(self, posts: Tensor, deters: Tensor, terms: Tensor) -> Dict[str, List[Any]]:
         deter = deters.detach().reshape(-1, self.deter_size)
         prior = posts.detach().reshape(-1, self.stoch_state_size)
 

@@ -11,11 +11,22 @@ def parse_args():
     parser.add_argument("--env-id", type=str, default="CartPole-v1")
     parser.add_argument("--log-dir", type=str, default="./logs/CartPole-v1/")
     parser.add_argument("--model-dir", type=str, default="./models/CartPole-v1/")
-    parser.add_argument("--device", type=str, default="cuda:1")
+    parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--harmony", type=bool, default=False)
 
-    # 10k, 6.6it/s
-    parser.add_argument("--running-steps", type=int, default=10_000)  # 10k
+    """
+    12m, 4596MB
+    Total params: 10,446,084
+    seed_1_2025_0506_234045 (12m,4e-5,ratio0.5) x
+    seed_1_2025_0507_021601 (12m,4e-3,4e-5,ratio0.5) x
+    seed_1_2025_0507_021632 (12m,4e-4,4e-5,ratio0.5) x
+    (12m,4e-3,1e-5,ratio0.5) 
+    (12m,4e-3,4e-6,ratio0.5)
+    """
+    # config1m
+    # Total params: 695,172;
+    # 1584MiB; 10k, 9.4it/s
+    parser.add_argument("--running-steps", type=int, default=1000_000)  # 10k
     parser.add_argument("--eval-interval", type=int, default=200)  # 50 logs
     parser.add_argument("--replay-ratio", type=int, default=0.5)
 
@@ -25,16 +36,31 @@ def parse_args():
     parser.add_argument("--benchmark", type=int, default=1)
     return parser.parse_args()
 
+import torch
+from collections import defaultdict
+def count_parameters(model: torch.nn.Module):
+    param_counts = defaultdict(int)
+    for name, param in model.named_parameters():
+        # name like 'encoder.conv1.weight' -> top_name='encoder'
+        top_name = name.split('.')[0]
+        param_counts[top_name] += param.numel()
+    total = sum(param_counts.values())
+    print(f"Total params: {total:,}")
+    for module_name, cnt in param_counts.items():
+        print(f"  {module_name:<16} {cnt:,}")
 
 if __name__ == '__main__':
     parser = parse_args()
-    configs_dict = get_configs(file_dir="config/CartPole-v1.yaml")
+    # configs_dict = get_configs(file_dir="config/CartPole-v1.yaml")
+    configs_dict = get_configs(file_dir="config/CartPole-v1(12m).yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
     configs = argparse.Namespace(**configs_dict)
 
     set_seed(configs.seed)
     envs = make_envs(configs)
     Agent = DreamerV3Agent(config=configs, envs=envs)
+
+    count_parameters(Agent.models)
 
     train_information = {"Deep learning toolbox": configs.dl_toolbox,
                          "Calculating device": configs.device,

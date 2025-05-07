@@ -47,7 +47,7 @@ moments:
 
 actor:
   layers: 3
-  dense_units: 64
+  dense_units: 256
   init_std: 2.0
   min_std: 0.1
   max_std: 1.0
@@ -57,7 +57,7 @@ actor:
 
 critic:
   layers: 3
-  dense_units: 64
+  dense_units: 256
   bins: 255
   outscale: 0.0
 
@@ -65,7 +65,7 @@ critic:
 world_model:
   encoder:
     # cnn
-    depth: 4
+    depth: 16
     mults: [2, 3, 4, 4]
     kernel: 5
     stride: 1
@@ -73,12 +73,12 @@ world_model:
     # mlp
     layers: 3
     symlog: True
-    dense_units: 64
+    dense_units: 256
     # weight_init scale
     outscale: 1.0
   decoder:  # alias: obs_predictor
     # cnn
-    depth: 4
+    depth: 16
     mults: [2, 3, 4, 4]
     kernel: 5
     stride: 1
@@ -86,16 +86,16 @@ world_model:
     blocks: 8
     # mlp
     layers: 3
-    dense_units: 64
+    dense_units: 256
     # weight_init scale
     outscale: 1.0
 
   # rssm (hidden_size in rssm; dense_units in others)
   rssm:
     # recurrent_model; alias: gru, dynamic_model, sequence_model
-    deter_size: 512  # 8 blocks of 512 hidden_size
+    deter_size: 2048  # 8 blocks of 512 hidden_size
     stoch_size: 32
-    classes: 4
+    classes: 16
     blocks: 8
     dyn_layers: 1
     # transition_model; alias: prior
@@ -103,7 +103,7 @@ world_model:
     # representation_model; alias: posterior
     obs_layers: 1
     absolute: False  # if True, posterior will only calc from obs_embed, rather than concat of obs_embed and deter
-    hidden_size: 64
+    hidden_size: 256
     unimix: 0.01
     # weight_init scale
     outscale: 1.0
@@ -111,12 +111,12 @@ world_model:
   reward_predictor:  # outscale: 0.0
     bins: 255
     layers: 1
-    dense_units: 64
+    dense_units: 256
     # weight_init scale
     outscale: 0.0
   discount_predictor:  # outscale: 1.0
     layers: 1
-    dense_units: 64
+    dense_units: 256
     # weight_init scale
     outscale: 1.0
 
@@ -133,8 +133,8 @@ buffer_size: 1000000  # 1e6
 batch_size: 16
 seq_len: 64
 learning_rate_model: 0.004  # 4e-3
-learning_rate_actor: 0.0004  # 4e-4
-learning_rate_critic: 0.0004  # 4e-4
+learning_rate_actor: 0.000004  # 4e-6
+learning_rate_critic: 0.000004  # 4e-6
 
 replay_ratio: 0.5  # gradient_step / replay_step
 running_steps: 10000  # 10k
