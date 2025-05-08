@@ -10,7 +10,8 @@ from xuance.torch.utils import dotdict, Moments, compute_lambda_values
 from xuance.torch.utils.harmonizer import Harmonizer
 
 
-class DreamerV3Policy(Module):  # checked
+# checked
+class DreamerV3Policy(Module):
     def __init__(self,
                  models: Module,
                  config: dotdict):
@@ -65,7 +66,7 @@ class DreamerV3Policy(Module):  # checked
         posts_logits = torch.empty(self.seq_len, self.batch_size, self.stoch_size, self.classes, device=self.device)
 
         for i in range(0, self.seq_len):
-            # h0, z0, x1, a0, f2 -> h1, z1_hat, z1
+            # h0, z0, x1, a0, f1 -> h1, z1_hat, z1
             deter, post, post_logits, prior, prior_logits = self.rssm.observe(
                 deter, post, embed[i], acts[i], is_first[i],
             )
@@ -86,7 +87,7 @@ class DreamerV3Policy(Module):  # checked
         return (po, pr, pc, priors_logits, posts_logits,
                 deters, posts)
 
-    def actor_critic_forward(self, posts: Tensor, deters: Tensor, terms: Tensor) -> Dict[str, List[Any]]:
+    def actor_critic_forward(self, deters: Tensor, posts: Tensor, terms: Tensor) -> Dict[str, List[Any]]:
         deter = deters.detach().reshape(-1, self.deter_size)
         prior = posts.detach().reshape(-1, self.stoch_state_size)
 

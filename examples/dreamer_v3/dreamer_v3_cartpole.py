@@ -20,8 +20,8 @@ def parse_args():
     seed_1_2025_0506_234045 (12m,4e-5,ratio0.5) x
     seed_1_2025_0507_021601 (12m,4e-3,4e-5,ratio0.5) x
     seed_1_2025_0507_021632 (12m,4e-4,4e-5,ratio0.5) x
-    (12m,4e-3,1e-5,ratio0.5) 
-    (12m,4e-3,4e-6,ratio0.5)
+    seed_1_2025_0507_231944 (12m,4e-3,1e-5,ratio0.5) x
+    seed_1_2025_0507_232132 (12m,4e-3,4e-6,ratio0.5) x
     """
     # config1m
     # Total params: 695,172;

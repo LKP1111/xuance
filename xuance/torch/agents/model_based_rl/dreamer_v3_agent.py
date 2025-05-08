@@ -72,6 +72,7 @@ class DreamerV3Agent(OffPolicyAgent):
         self.deter = torch.zeros(self.envs.num_envs, self.deter_size).to(config.device)
         self.stoch = torch.zeros(self.envs.num_envs, self.stoch_size, self.classes).to(config.device)
         extra_shape = () if not self.is_continuous else self.act_shape
+        # o1, a0, r1, d1, f1
         self.train_states: List[np.ndarray] = [
             self.envs.buf_obs,  # obs: (envs, *obs_shape),
             np.zeros((self.envs.num_envs,) + extra_shape),  # real_acts
@@ -168,6 +169,7 @@ class DreamerV3Agent(OffPolicyAgent):
 
     def train(self, train_steps):  # each train still uses old rssm_states until episode end
         return_info = {}
+        # (o1, a0, r1, d1, f1)
         obs, acts, rews, terms, truncs, is_first = self.train_states
 
         for _ in tqdm(range(train_steps)):
@@ -180,12 +182,12 @@ class DreamerV3Agent(OffPolicyAgent):
                 acts, self.deter, self.stoch = self.observe_and_action(obs, self.deter, self.stoch, acts, is_first)
             if self.atari:  # use truncs to train in xc_atari
                 terms = deepcopy(truncs)
-            """(o1, a1, r1, term1, trunc1, is_first1), acts: real_acts"""
+            """(o1, a1, r1, d1, f1), acts: real_acts"""
             self.memory.store(obs, acts, self._process_reward(rews), terms, truncs, is_first)
             next_obs, rews, terms, truncs, infos = self.envs.step(acts)
             """
             set to zeros after the first step
-            (o2, a1, r2, term2, trunc2, is_first2)
+            (o2, a1, r2, d2, f2)
             """
             is_first = np.zeros_like(terms)
             obs = next_obs
@@ -214,7 +216,7 @@ class DreamerV3Agent(OffPolicyAgent):
             if len(done_idxes) > 0:
                 """
                 store the last data and reset all
-                (o_t, a_t = 0 for dones, r_t, term_t, trunc_t, is_first_t)
+                (o2, a2=0, r2, d2=True, f2)
                 """
                 extra_shape = () if not self.is_continuous else self.act_shape
                 acts[done_idxes] = np.zeros((len(done_idxes),) + extra_shape)
@@ -222,7 +224,10 @@ class DreamerV3Agent(OffPolicyAgent):
                     terms = deepcopy(truncs)
                 self.memory.store(obs, acts, self._process_reward(rews), terms, truncs, is_first)
 
-                """reset DreamerV3 Player's states"""
+                """
+                reset train_states
+                (o1, a0, r1, d1, f1); (o1, 0, 0, 0, 1)
+                """
                 obs[done_idxes] = np.stack([infos[idx]["reset_obs"] for idx in done_idxes])  # reset obs
                 self.envs.buf_obs[done_idxes] = obs[done_idxes]
                 rews[done_idxes] = np.zeros(len(done_idxes))

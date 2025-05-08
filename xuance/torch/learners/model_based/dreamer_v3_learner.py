@@ -60,7 +60,7 @@ class DreamerV3_Learner(Learner):
         is_first = torch.as_tensor(samples['is_first'], device=self.device)
         """
         seq_shift (preprocess)
-        (o1, a1 -> a0, r1, terms1, truncs1, is_first1)
+        (o1, a1 -> a0, r1, d1, f1)
         """
         if not self.is_continuous:
             acts = torch.nn.functional.one_hot(acts.long(), num_classes=self.action_shape).float()
@@ -69,21 +69,20 @@ class DreamerV3_Learner(Learner):
         cont = 1 - terms
 
         with autocast(dtype=torch.float16):
-            po, pr, pc, priors_logits, posteriors_logits, recurrent_states, posteriors =\
+            po, pr, pc, priors_logits, posts_logits, deters, posts = \
                 self.policy.model_forward(obs, acts, is_first)
-
             """model"""
             observation_loss = -po.log_prob(obs)
             reward_loss = -pr.log_prob(rews)
             # KL balancing
             dyn_loss = kl_div(  # prior -> post
-                Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
+                Independent(OneHotCategoricalStraightThrough(logits=posts_logits.detach()), 1),
                 Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
             )
             free_nats = torch.full_like(dyn_loss, self.kl_free_nats)
             dyn_loss = torch.maximum(dyn_loss, free_nats)
             repr_loss = kl_div(  # post -> prior
-                Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
+                Independent(OneHotCategoricalStraightThrough(logits=posts_logits), 1),
                 Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
             )
             repr_loss = torch.maximum(repr_loss, free_nats)
@@ -118,7 +117,7 @@ class DreamerV3_Learner(Learner):
 
         """actor"""
         with autocast(dtype=torch.float16):
-            out = self.policy.actor_critic_forward(posteriors, recurrent_states, terms)
+            out = self.policy.actor_critic_forward(deters, posts, terms)
             objective, discount, entropy = out['for_actor']
             actor_loss = -torch.mean(discount.detach() * (objective + entropy))
 
@@ -133,10 +132,9 @@ class DreamerV3_Learner(Learner):
 
         with autocast(dtype=torch.float16):
             """critic"""
-            _, discount2, _ = out['for_actor']  # resuse discount
             qv, predicted_target_values, lambda_values = out['for_critic']
             critic_loss = -qv.log_prob(lambda_values.detach()) -qv.log_prob(predicted_target_values.detach())
-            critic_loss = torch.mean(discount2.squeeze(-1).detach() * critic_loss)
+            critic_loss = torch.mean(discount.squeeze(-1).detach() * critic_loss)
 
         self.optimizer['critic'].zero_grad()
         self.scaler.scale(critic_loss).backward()

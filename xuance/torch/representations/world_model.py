@@ -346,11 +346,11 @@ class RSSM(nn.Module):
         out = self.repr_model(input)
         return self.to_logits(out).view(*batch_shape, self.stoch_size, self.classes)
 
-    # h0, z0, x1, a0, f2 -> h1, z1, z1_hat
+    # h0, z0, x1, a0, f1 -> h1, z1, z1_hat
     def observe(self, 
                 deter: Tensor, stoch: Tensor,
                 embed: Tensor, action: Tensor, is_first: Tensor):
-        # mask
+        # f1: if x1 is from first obs, then set h0, z0, a0 = [0] * 3
         deter, stoch, action = [
             torch.where(
                 ~is_first.bool().view(is_first.shape + (1, ) * (x.dim() - is_first.dim())).expand_as(x), 
