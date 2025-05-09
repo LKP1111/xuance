@@ -1,0 +1,161 @@
+dl_toolbox: "torch"  # The deep learning toolbox. Choices: "torch", "mindspore", "tensorlayer"
+project_name: "XuanCe_New_Algorithm"
+logger: "tensorboard"  # Choices: tensorboard, wandb.
+wandb_user_name: "your_user_name"
+render: False
+render_mode: 'rgb_array' # Choices: 'human', 'rgb_array'.
+fps: 50
+test_mode: False
+device: "cpu"
+distributed_training: False  # Whether to use multi-GPU for distributed training.
+master_port: '12355'  # The master port for current experiment when use distributed training.
+
+agent: "DreamerV3"
+vectorize: "Dummy_Atari"
+env_name: "Atari"
+env_id: "ALE/Pong-v5"
+env_seed: 1
+obs_type: "grayscale"  # choice for Atari env: ram, rgb, grayscale
+img_size: [64, 64]  # default is 210 x 160 in gym[Atari]
+num_stack: 1  # frame stack trick
+frame_skip: 4  # frame skip trick  (action_repeat = 4 for atari100k)
+noop_max: 30
+representation: "DreamerV3WorldModel"
+learner: "DreamerV3_Learner"
+policy: "DreamerV3Policy"
+runner: "DRL"
+
+# world_model & actor_critic start (200m config)
+harmony: False
+
+activation: 'silu'
+norm: 'rms'
+pixel: True
+
+# action_clip: 1.0
+loss_scales:
+  # kl
+  kl_dynamic: 1.0
+  kl_representation: 0.1
+  kl_free_nats: 1.0
+  kl_regularizer: 1.0
+  continue_scale_factor: 1.0
+  # actor
+  ent_coef: 0.0003
+
+moments:
+  decay: 0.99
+  max: 1.0
+  percentile:
+    low: 0.05
+    high: 0.95
+
+actor:
+  layers: 3
+  dense_units: 768
+  init_std: 2.0
+  min_std: 0.1
+  max_std: 1.0
+  unimix: 0.01
+  outscale: 0.01
+
+
+critic:
+  layers: 3
+  dense_units: 768
+  bins: 255
+  outscale: 0.0
+
+
+world_model:
+  encoder:
+    # cnn
+    depth: 48
+    mults: [2, 3, 4, 4]
+    kernel: 5
+    stride: 1
+    padding: 'same'
+    # mlp
+    layers: 3
+    symlog: True
+    dense_units: 768
+    # weight_init scale
+    outscale: 1.0
+  decoder:  # alias: obs_predictor
+    # cnn
+    depth: 48
+    mults: [2, 3, 4, 4]
+    kernel: 5
+    stride: 1
+    padding: 'same'
+    blocks: 8
+    # mlp
+    layers: 3
+    dense_units: 768
+    # weight_init scale
+    outscale: 1.0
+    
+  # rssm (hidden_size in rssm; dense_units in others)
+  rssm:  
+    # recurrent_model; alias: gru, dynamic_model, sequence_model
+    deter_size: 6144  # 8 blocks of 512 hidden_size
+    stoch_size: 32
+    classes: 48
+    blocks: 8
+    dyn_layers: 1
+    # transition_model; alias: prior
+    img_layers: 2
+    # representation_model; alias: posterior
+    obs_layers: 1
+    absolute: False  # if True, posterior will only calc from obs_embed, rather than concat of obs_embed and deter
+    hidden_size: 768
+    unimix: 0.01
+    # weight_init scale
+    outscale: 1.0
+  # predictors
+  reward_predictor:  # outscale: 0.0
+    bins: 255
+    layers: 1
+    dense_units: 768
+    # weight_init scale
+    outscale: 0.0
+  discount_predictor:  # outscale: 1.0
+    layers: 1
+    dense_units: 768
+    # weight_init scale
+    outscale: 1.0
+
+soft_update_freq: 1  # soft_update per update
+soft_update_rate: 0.02
+gamma: 0.996996996996997
+lmbda: 0.95
+horizon: 15
+# world_model & actor_critic end
+
+seed: 1
+parallels: 1
+buffer_size: 1000000  # 1e6
+batch_size: 16
+seq_len: 64
+learning_rate_model: 0.0001  # 1e-4
+learning_rate_actor: 0.00008  # 8e-5
+learning_rate_critic: 0.00008  # 8e-5
+
+replay_ratio: 0.25  # gradient_step / replay_step
+running_steps: 100000  # 100k
+start_training: 1024
+
+use_grad_clip: False  # gradient normalization
+clip_type: 1
+grad_clip_norm: 100.0
+use_actions_mask: False
+use_obsnorm: False
+use_rewnorm: False
+obsnorm_range: 5
+rewnorm_range: 5
+
+test_steps: 10000
+eval_interval: 2000
+test_episode: 3
+log_dir: "./logs/Pong-v5/"
+model_dir: "./models/Pong-v5/"

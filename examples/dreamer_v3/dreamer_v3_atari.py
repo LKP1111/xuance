@@ -23,6 +23,11 @@ def parse_args():
     #   no amp, f32: 23224MiB; : 5.8it/s
     #   amp, bf16: 21074MiB, 3.45it/s;
     #   amp, f16: 23492MiB, f16, 6.8it/s
+    """
+    100m in sc_lkp, f32
+    Total params: 99,551,430; 
+    250W; 15539MiB; 70~97%; 5.2it/s
+    """
     parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
     parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
     parser.add_argument("--replay-ratio", type=int, default=0.25)
@@ -52,7 +57,8 @@ if __name__ == '__main__':
     # sys.path.append('/home/lkp/projects/xc_official')
     
     parser = parse_args()
-    configs_dict = get_configs(file_dir="config/atari.yaml")
+    # configs_dict = get_configs(file_dir="config/atari.yaml")
+    configs_dict = get_configs(file_dir="config/atari(100m).yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
     configs = argparse.Namespace(**configs_dict)
 
