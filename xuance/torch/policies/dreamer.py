@@ -28,6 +28,18 @@ class DreamerV3Policy(Module):
         self.act_size = np.prod(config.act_shape)
 
         # nets
+        """
+        torch 1.13.0 x
+        torch 2.7.0+cu126 x
+        /home/lkp/anaconda3/envs/xc_official/lib/python3.8/site-packages/torch/cuda/__init__.py:155: UserWarning: 
+        NVIDIA GeForce RTX 5080 with CUDA capability sm_120 is not compatible with the current PyTorch installation.
+        The current PyTorch install supports CUDA capabilities sm_37 sm_50 sm_60 sm_70 sm_75 sm_80 sm_86.
+        If you want to use the NVIDIA GeForce RTX 5080 GPU with PyTorch, please check the instructions at https://pytorch.org/get-started/locally/
+          warnings.warn(incompatible_device_warn.format(device_name, capability, " ".join(arch_list), device_name))
+        
+        torch 2.8.0.dev20250509+cu128
+        pip3 install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall
+        """
         models: Module = models.to(config.device)
         self.encoder: Module = models.encoder
         self.rssm: Module= models.rssm

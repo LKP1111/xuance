@@ -45,7 +45,7 @@ class DreamerV3_Learner(Learner):
             'critic': torch.optim.Adam(policy.critic.parameters(), config.learning_rate_critic)
         }
         # AMP GradScaler for float16
-        self.scaler = GradScaler()
+        # self.scaler = GradScaler()
         self.gradient_step = 0
 
     def update(self, **samples):
