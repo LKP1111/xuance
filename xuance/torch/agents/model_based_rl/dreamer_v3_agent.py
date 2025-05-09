@@ -139,11 +139,11 @@ class DreamerV3Agent(OffPolicyAgent):
         prev_acts = prev_acts.view(envs, np.prod(self.act_shape))
         is_first = is_first.view(envs, 1)
         with torch.no_grad():
-            with autocast(dtype=torch.float16):
-                embed = self.models.encoder(obs)
-                deter, stoch, _, _, _ = self.models.rssm.observe(deter, stoch, embed, prev_acts, is_first)
-                latent = torch.cat([deter, stoch.view(*deter.shape[:-1], -1)], -1)
-                acts, _ = self.policy.actor(latent, sample=not test_mode)
+            # with autocast(dtype=torch.float16):
+            embed = self.models.encoder(obs)
+            deter, stoch, _, _, _ = self.models.rssm.observe(deter, stoch, embed, prev_acts, is_first)
+            latent = torch.cat([deter, stoch.view(*deter.shape[:-1], -1)], -1)
+            acts, _ = self.policy.actor(latent, sample=not test_mode)
         # ont-hot -> real_actions
         if not self.is_continuous:
             acts = acts.argmax(dim=-1).detach().cpu().numpy()

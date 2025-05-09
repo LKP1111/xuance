@@ -15,13 +15,28 @@ def parse_args():
     parser.add_argument("--harmony", type=bool, default=False)
 
     """
-    12m, 4596MB
+    12m, f16, 4596MB
     Total params: 10,446,084
     seed_1_2025_0506_234045 (12m,4e-5,ratio0.5) x
     seed_1_2025_0507_021601 (12m,4e-3,4e-5,ratio0.5) x
     seed_1_2025_0507_021632 (12m,4e-4,4e-5,ratio0.5) x
     seed_1_2025_0507_231944 (12m,4e-3,1e-5,ratio0.5) x
     seed_1_2025_0507_232132 (12m,4e-3,4e-6,ratio0.5) x
+    f32, 5144MiB, 8.9it/s
+    seed_1_2025_0508_230457(12m,4e-3,4e-4,ratio0.5,f32) x
+    seed_1_2025_0508_230648(12m,4e-3,4e-5,ratio0.5,f32) (<10k,b1;>10k x)
+    seed_1_2025_0509_001710(12m,4e-5,ratio0.5,f32) x
+    seed_1_2025_0509_003415(12m,4e-3,1e-5,ratio0.5,f32) (500) x
+    seed_1_2025_0509_003604(12m,4e-3,8e-5,ratio0.5,f32) x
+    seed_1_2025_0509_011346(12m,4e-3,2e-5,ratio0.5,f32) x
+    seed_1_2025_0509_011607(12m,1e-3,4e-5,ratio0.5,f32) x
+    (12m,4e-3,4e-5,ratio0.5,f32,kl_dyn0.5,cont_layer3)
+    (12m,1e-3,4e-5,ratio0.5,f32,kl_dyn0.5,cont_layer3)
+    
+    1m, f32, 10.2it/s
+    seed_1_2025_0509_022723(1m,4e-3,4e-5,ratio0.5,f32) (500) x
+    seed_1_2025_0509_022751(1m,4e-3,4e-4,ratio0.5,f32) (500) x
+    
     """
     # config1m
     # Total params: 695,172;

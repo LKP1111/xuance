@@ -1,5 +1,4 @@
 import torch
-from triton.language import dtype
 
 from xuance.common import Tuple, Union
 from xuance.torch.learners import Learner
@@ -68,82 +67,88 @@ class DreamerV3_Learner(Learner):
         acts = torch.cat((torch.zeros_like(acts[:1]), acts[:-1]), 0)  # bug fixed ones_like -> zeros_like
         cont = 1 - terms
 
-        with autocast(dtype=torch.float16):
-            po, pr, pc, priors_logits, posts_logits, deters, posts = \
-                self.policy.model_forward(obs, acts, is_first)
-            """model"""
-            observation_loss = -po.log_prob(obs)
-            reward_loss = -pr.log_prob(rews)
-            # KL balancing
-            dyn_loss = kl_div(  # prior -> post
-                Independent(OneHotCategoricalStraightThrough(logits=posts_logits.detach()), 1),
-                Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
-            )
-            free_nats = torch.full_like(dyn_loss, self.kl_free_nats)
-            dyn_loss = torch.maximum(dyn_loss, free_nats)
-            repr_loss = kl_div(  # post -> prior
-                Independent(OneHotCategoricalStraightThrough(logits=posts_logits), 1),
-                Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
-            )
-            repr_loss = torch.maximum(repr_loss, free_nats)
+        # with autocast(dtype=torch.float16):
+        po, pr, pc, priors_logits, posts_logits, deters, posts = \
+            self.policy.model_forward(obs, acts, is_first)
+        """model"""
+        observation_loss = -po.log_prob(obs)
+        reward_loss = -pr.log_prob(rews)
+        # KL balancing
+        dyn_loss = kl_div(  # prior -> post
+            Independent(OneHotCategoricalStraightThrough(logits=posts_logits.detach()), 1),
+            Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
+        )
+        free_nats = torch.full_like(dyn_loss, self.kl_free_nats)
+        dyn_loss = torch.maximum(dyn_loss, free_nats)
+        repr_loss = kl_div(  # post -> prior
+            Independent(OneHotCategoricalStraightThrough(logits=posts_logits), 1),
+            Independent(OneHotCategoricalStraightThrough(logits=priors_logits.detach()), 1),
+        )
+        repr_loss = torch.maximum(repr_loss, free_nats)
 
-            if pc is not None and cont is not None:
-                continue_loss = self.continue_scale_factor * -pc.log_prob(cont)
-            else:
-                continue_loss = torch.zeros_like(reward_loss)
+        if pc is not None and cont is not None:
+            continue_loss = self.continue_scale_factor * -pc.log_prob(cont)
+        else:
+            continue_loss = torch.zeros_like(reward_loss)
 
-            if self.config.harmony:
-                repr_loss *= self.kl_representation / (self.kl_representation + self.kl_dynamic)
-                dyn_loss *= self.kl_dynamic / (self.kl_representation + self.kl_dynamic)
-                kl_loss = dyn_loss + repr_loss
-                observation_loss = self.policy.harmonizer_s1(observation_loss)
-                reward_loss = self.policy.harmonizer_s2(reward_loss)
-                kl_loss = self.policy.harmonizer_s3(kl_loss)
-            else:
-                repr_loss *= self.kl_representation
-                dyn_loss *= self.kl_dynamic
-                kl_loss = dyn_loss + repr_loss
-                kl_loss *= self.kl_regularizer
-            model_loss = (kl_loss + observation_loss + reward_loss + continue_loss).mean()
+        if self.config.harmony:
+            repr_loss *= self.kl_representation / (self.kl_representation + self.kl_dynamic)
+            dyn_loss *= self.kl_dynamic / (self.kl_representation + self.kl_dynamic)
+            kl_loss = dyn_loss + repr_loss
+            observation_loss = self.policy.harmonizer_s1(observation_loss)
+            reward_loss = self.policy.harmonizer_s2(reward_loss)
+            kl_loss = self.policy.harmonizer_s3(kl_loss)
+        else:
+            repr_loss *= self.kl_representation
+            dyn_loss *= self.kl_dynamic
+            kl_loss = dyn_loss + repr_loss
+            kl_loss *= self.kl_regularizer
+        model_loss = (kl_loss + observation_loss + reward_loss + continue_loss).mean()
 
         self.optimizer['model'].zero_grad()
-        self.scaler.scale(model_loss).backward()
-        self.scaler.unscale_(self.optimizer['model'])
+        model_loss.backward()
+        # self.scaler.scale(model_loss).backward()
+        # self.scaler.unscale_(self.optimizer['model'])
         adaptive_grad_clip(self.wm_params)
         # if self.config.world_model.clip_gradients is not None:
         #     torch.nn.utils.clip_grad_norm_(self.wm_params, self.config.world_model.clip_gradients)
-        self.scaler.step(self.optimizer['model'])
-        self.scaler.update()
+        # self.scaler.step(self.optimizer['model'])
+        # self.scaler.update()
+        self.optimizer['model'].step()
 
         """actor"""
-        with autocast(dtype=torch.float16):
-            out = self.policy.actor_critic_forward(deters, posts, terms)
-            objective, discount, entropy = out['for_actor']
-            actor_loss = -torch.mean(discount.detach() * (objective + entropy))
+        # with autocast(dtype=torch.float16):
+        out = self.policy.actor_critic_forward(deters, posts, terms)
+        objective, discount, entropy = out['for_actor']
+        actor_loss = -torch.mean(discount.detach() * (objective + entropy))
 
         self.optimizer['actor'].zero_grad()
-        self.scaler.scale(actor_loss).backward()
-        self.scaler.unscale_(self.optimizer['actor'])
+        actor_loss.backward()
+        # self.scaler.scale(actor_loss).backward()
+        # self.scaler.unscale_(self.optimizer['actor'])
         adaptive_grad_clip(self.policy.actor.parameters())
         # if self.config.actor.clip_gradients is not None:
         #     torch.nn.utils.clip_grad_norm_(self.policy.actor.parameters(), self.config.actor.clip_gradients)
-        self.scaler.step(self.optimizer['actor'])
-        self.scaler.update()
+        # self.scaler.step(self.optimizer['actor'])
+        # self.scaler.update()
+        self.optimizer['actor'].step()
 
-        with autocast(dtype=torch.float16):
-            """critic"""
-            qv, predicted_target_values, lambda_values = out['for_critic']
-            critic_loss = -qv.log_prob(lambda_values.detach()) -qv.log_prob(predicted_target_values.detach())
-            critic_loss = torch.mean(discount.squeeze(-1).detach() * critic_loss)
+        # with autocast(dtype=torch.float16):
+        """critic"""
+        qv, predicted_target_values, lambda_values = out['for_critic']
+        critic_loss = -qv.log_prob(lambda_values.detach()) -qv.log_prob(predicted_target_values.detach())
+        critic_loss = torch.mean(discount.squeeze(-1).detach() * critic_loss)
 
         self.optimizer['critic'].zero_grad()
-        self.scaler.scale(critic_loss).backward()
-        self.scaler.unscale_(self.optimizer['critic'])
+        critic_loss.backward()
+        # self.scaler.scale(critic_loss).backward()
+        # self.scaler.unscale_(self.optimizer['critic'])
         adaptive_grad_clip(self.policy.critic.parameters())
         # if self.config.critic.clip_gradients is not None:
         #     torch.nn.utils.clip_grad_norm_(self.policy.critic.parameters(), self.config.critic.clip_gradients)
-        self.scaler.step(self.optimizer['critic'])
-        self.scaler.update()
+        # self.scaler.step(self.optimizer['critic'])
+        # self.scaler.update()
+        self.optimizer['critic'].step()
 
         # TODO replay loss
 

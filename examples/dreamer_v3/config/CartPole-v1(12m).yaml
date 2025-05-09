@@ -132,7 +132,7 @@ parallels: 1
 buffer_size: 1000000  # 1e6
 batch_size: 16
 seq_len: 64
-learning_rate_model: 0.00004  # 4e-5
+learning_rate_model: 0.001  # 4e-3
 learning_rate_actor: 0.00004  # 4e-5
 learning_rate_critic: 0.00004  # 4e-5
 
