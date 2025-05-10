@@ -36,10 +36,10 @@ class DreamerV3Policy(Module):  # checked
 
         # running mean
         self.moments = Moments(
-            self.config.actor.moments.decay,
-            self.config.actor.moments.max,
-            self.config.actor.moments.percentile.low,
-            self.config.actor.moments.percentile.high,
+            self.config.moments.decay,
+            self.config.moments.max,
+            self.config.moments.percentile.low,
+            self.config.moments.percentile.high,
         )
 
         self.harmonizer_s1 = Harmonizer(self.device)
@@ -112,7 +112,7 @@ class DreamerV3Policy(Module):  # checked
             self.actions_dim,
             device=self.device,
         )  # [16, 1024, 2]
-        actions = torch.cat(self.actor(imagined_latent_state.detach())[0], dim=-1)  # z0 -> a0
+        actions = self.actor(imagined_latent_state.detach())[0]  # z0 -> a0
         imagined_actions[0] = actions
 
         for i in range(1, self.config.horizon + 1):
@@ -120,7 +120,7 @@ class DreamerV3Policy(Module):  # checked
             imagined_prior = imagined_prior.view(1, -1, self.stoch_state_size)  # [1, 1024, 1024]
             imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
             imagined_trajectories[i] = imagined_latent_state
-            actions = torch.cat(self.actor(imagined_latent_state.detach())[0], dim=-1)
+            actions = self.actor(imagined_latent_state.detach())[0]
             imagined_actions[i] = actions
         predicted_values = TwoHotEncodingDistribution(self.critic(imagined_trajectories), dims=1).mean
         predicted_rewards = TwoHotEncodingDistribution(self.world_model.reward_model(imagined_trajectories), dims=1).mean
@@ -138,7 +138,7 @@ class DreamerV3Policy(Module):  # checked
         with torch.no_grad():
             discount = torch.cumprod(continues * self.config.gamma, dim=0) / self.config.gamma
 
-        policies: Sequence[torch.distributions.Distribution] = self.actor(imagined_trajectories.detach())[1]
+        policies: Sequence[torch.distributions.Distribution] = [self.actor(imagined_trajectories.detach())[1]]
 
         baseline = predicted_values[:-1]
         offset, invscale = self.moments(lambda_values)
@@ -159,7 +159,7 @@ class DreamerV3Policy(Module):  # checked
                 * advantage.detach()
             )
         try:
-            entropy = self.config.actor.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
+            entropy = self.config.loss_scales.ent_coef * torch.stack([p.entropy() for p in policies], -1).sum(dim=-1)
         except NotImplementedError:
             entropy = torch.zeros_like(objective)
 

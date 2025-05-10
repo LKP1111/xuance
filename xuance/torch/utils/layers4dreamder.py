@@ -5,7 +5,7 @@ Adapted from: https://github.com/thu-ml/tianshou/blob/master/tianshou/utils/net/
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor, Size, nn
 
 ModuleType = Optional[Type[nn.Module]]
 ArgType = Union[Tuple[Any, ...], Dict[Any, Any], None]
@@ -633,6 +633,55 @@ class LayerNormGRUCell(nn.Module):
         return hx
 
 
+# ref: https://github.com/danijar/dreamerv3/blob/main/embodied/jax/nets.py#L254
+class BlockLinear(nn.Module):
+    def __init__(self,
+                 input_size: int,
+                 output_size: int,
+                 blocks: int,
+                 bias: bool=True,
+                 outscale: float=1.0
+        ) -> None:
+        super().__init__()
+        assert input_size % blocks == 0 and output_size % blocks == 0
+        self.input_size = input_size
+        self.output_size = output_size
+        self.blocks = blocks
+        self.bias_flag = bias
+        self.outscale = outscale
+
+        self.in_blocks = input_size // blocks
+        self.out_blocks = output_size // blocks
+        self.weight = nn.Parameter(
+            torch.randn(blocks, self.in_blocks, self.out_blocks) * outscale
+        )
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(output_size))
+        else:
+            self.register_parameter('bias', None)
+
+    def forward(self, x):
+        # x.shape: (B=batch, ~)
+        B = x.shape[0]
+        x = x.view(B, self.blocks, self.in_blocks)  # (B, blocks, in_blocks)
+        # block-wise matmul
+        # x: (B, [k], i), weight: ([k], i, o) -> (B, [k], o)
+        x = torch.einsum('bki,kio->bko', x, self.weight)
+        x = x.reshape(B, -1)  # (B, output_size)
+        if self.bias is not None:
+            x = x + self.bias
+        return x
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}("
+            f"input_size={self.input_size}, "
+            f"output_size={self.output_size}, "
+            f"blocks={self.blocks}, "
+            f"bias={self.bias_flag})"
+        )
+
+
 class MultiEncoder(nn.Module):
     def __init__(
         self,
@@ -749,4 +798,42 @@ class LayerNorm(nn.LayerNorm):
         return out.to(input_dtype)
 
 
+# ref: https://github.com/danijar/dreamerv3/blob/main/embodied/jax/nets.py#L361
+class RMSNorm(nn.Module):
+    def __init__(self, normalized_shape: Union[int, List[int], Size], eps: float = 1e-4, scale: bool = True):
+        super().__init__()
+        self.eps = eps
+        self.scale = scale  # related to torch elementwise_affine
+        self.normalized_shape = normalized_shape  # last dim size
+        if not isinstance(normalized_shape, int):
+            assert len(normalized_shape) == 1
+        if self.scale:
+            self.weight = nn.Parameter(torch.empty(self.normalized_shape))
+        else:
+            self.register_parameter('weight', None)
 
+    def forward(self, x):
+        dtype = x.dtype
+        x = x.float()
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()  # norm last dim
+        x = x / rms
+        if self.scale:
+            x *= self.weight
+        return x.to(dtype)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(normalized_shape={self.normalized_shape})"
+
+
+class RMSNormChannelLast(RMSNorm):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x: Tensor) -> Tensor:
+        if x.dim() != 4:
+            raise ValueError(f"Input tensor must be 4D (NCHW), received {len(x.shape)}D instead: {x.shape}")
+        input_dtype = x.dtype
+        x = x.permute(0, 2, 3, 1)
+        x = super().forward(x)
+        x = x.permute(0, 3, 1, 2)
+        return x.to(input_dtype)

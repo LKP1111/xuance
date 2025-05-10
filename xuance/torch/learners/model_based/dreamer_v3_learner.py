@@ -13,23 +13,23 @@ class DreamerV3_Learner(Learner):
     def __init__(self,
                  config: Namespace,
                  policy: DreamerV3Policy,
-                 action_shape: Union[int, Tuple[int, ...]]):
+                 act_shape: Union[int, Tuple[int, ...]]):
         super(DreamerV3_Learner, self).__init__(config, policy)
         self.policy = policy  # for code completion
-        self.action_shape = action_shape
+        self.act_shape = act_shape
 
         # config
         self.config = dotdict(vars(config))
         self.is_continuous = self.config.is_continuous
-        self.tau = self.config.critic.tau
+        self.tau = self.config.tau
         self.gamma = self.config.gamma
-        self.soft_update_freq = self.config.critic.soft_update_freq
+        self.soft_update_freq = self.config.soft_update_freq
 
-        self.kl_dynamic = self.config.world_model.kl_dynamic  # 0.5
-        self.kl_representation = self.config.world_model.kl_representation  # 0.1
-        self.kl_free_nats = self.config.world_model.kl_free_nats  # 1.0
-        self.kl_regularizer = self.config.world_model.kl_regularizer  # 1.0
-        self.continue_scale_factor = self.config.world_model.continue_scale_factor  # 1.0
+        self.kl_dynamic = self.config.loss_scales.kl_dynamic  # 0.5
+        self.kl_representation = self.config.loss_scales.kl_representation  # 0.1
+        self.kl_free_nats = self.config.loss_scales.kl_free_nats  # 1.0
+        self.kl_regularizer = self.config.loss_scales.kl_regularizer  # 1.0
+        self.continue_scale_factor = self.config.loss_scales.continue_scale_factor  # 1.0
 
         model_parameters = list(self.policy.world_model.parameters())
         if self.config.harmony:
@@ -55,7 +55,7 @@ class DreamerV3_Learner(Learner):
         acts = torch.as_tensor(samples['acts'], device=self.device)
         if not self.is_continuous:
             # acts to one_hot [seq, batch, action_size]
-            acts = torch.nn.functional.one_hot(acts.long(), num_classes=self.action_shape).float()
+            acts = torch.nn.functional.one_hot(acts.long(), num_classes=self.act_shape).float()
         rews = torch.as_tensor(samples['rews'], device=self.device)
         terms = torch.as_tensor(samples['terms'], device=self.device)
         truncs = torch.as_tensor(samples['truncs'], device=self.device)  # no use
@@ -79,7 +79,7 @@ class DreamerV3_Learner(Learner):
             Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits.detach()), 1),
             Independent(OneHotCategoricalStraightThrough(logits=priors_logits), 1),
         )
-        free_nats = torch.full_like(dyn_loss, self.config.world_model.kl_free_nats)
+        free_nats = torch.full_like(dyn_loss, self.config.loss_scales.kl_free_nats)
         dyn_loss = torch.maximum(dyn_loss, free_nats)
         repr_loss = kl_div(  # post -> prior
             Independent(OneHotCategoricalStraightThrough(logits=posteriors_logits), 1),
@@ -108,8 +108,8 @@ class DreamerV3_Learner(Learner):
 
         self.optimizer['model'].zero_grad()
         model_loss.backward()
-        if self.config.world_model.clip_gradients is not None:
-            torch.nn.utils.clip_grad_norm_(self.policy.world_model.parameters(), self.config.world_model.clip_gradients)
+        # if self.config.world_model.clip_gradients is not None:
+        #     torch.nn.utils.clip_grad_norm_(self.policy.world_model.parameters(), self.config.world_model.clip_gradients)
         self.optimizer['model'].step()
 
         """actor"""
@@ -120,8 +120,8 @@ class DreamerV3_Learner(Learner):
 
         self.optimizer['actor'].zero_grad()
         actor_loss.backward()
-        if self.config.actor.clip_gradients is not None:
-            torch.nn.utils.clip_grad_norm_(self.policy.actor.parameters(), self.config.actor.clip_gradients)
+        # if self.config.actor.clip_gradients is not None:
+        #     torch.nn.utils.clip_grad_norm_(self.policy.actor.parameters(), self.config.actor.clip_gradients)
         self.optimizer['actor'].step()
 
         """critic"""
@@ -130,8 +130,8 @@ class DreamerV3_Learner(Learner):
         critic_loss = torch.mean(critic_loss * discount[:-1].squeeze(-1))
         self.optimizer['critic'].zero_grad()
         critic_loss.backward()
-        if self.config.critic.clip_gradients is not None:
-            torch.nn.utils.clip_grad_norm_(self.policy.critic.parameters(), self.config.critic.clip_gradients)
+        # if self.config.critic.clip_gradients is not None:
+        #     torch.nn.utils.clip_grad_norm_(self.policy.critic.parameters(), self.config.critic.clip_gradients)
         self.optimizer['critic'].step()
 
         self.gradient_step += 1

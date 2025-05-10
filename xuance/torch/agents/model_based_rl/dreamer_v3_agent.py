@@ -72,14 +72,14 @@ class DreamerV3Agent(OffPolicyAgent):
                               input_space: Optional[gym.spaces.Space],
                               config: Optional[Namespace]) -> DreamerV3WorldModel:
         # specify the type in order to use code completion
-        actions_dim = tuple(
+        act_shape = tuple(
             self.envs.action_space.shape
             if self.is_continuous else (
                 self.envs.action_space.nvec.tolist() if self.is_multidiscrete else [self.envs.action_space.n]
             )
         )
         input_representations = dict(
-            actions_dim=actions_dim,
+            act_shape=act_shape,
             is_continuous=self.is_continuous,
             config=self.config,
             obs_space=self.envs.observation_space
@@ -122,18 +122,21 @@ class DreamerV3Agent(OffPolicyAgent):
         # [envs, *obs_shape] -> [1: batch, envs, *obs_shape]
         obs = torch.as_tensor(obs, device=self.device, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
-            actions = player.get_actions(obs, greedy=test_mode, mask=None)[0][0]
+            acts = player.get_actions(obs, greedy=test_mode, mask=None)
         # ont-hot -> real_actions
         if not self.is_continuous:
-            actions = actions.argmax(dim=1).detach().cpu().numpy()
-        else:  # [1, envs, *act_shape]
-            actions = actions.reshape(obs.shape[1], *self.act_shape).detach().cpu().numpy()
-            # action mapping in xuance.environment.utils.wrapper.XuanCeEnvWrapper.step
-            # actions = (actions + 1.0) * 0.5 * (self.actions_high - self.actions_low) + self.actions_low  # action_scaling
+            acts = acts.argmax(dim=-1).detach().cpu().numpy()
+        else:  # [envs, *act_shape]
+            acts = acts.reshape(obs.shape[1], *self.act_shape).detach().cpu().numpy()
+        # ont-hot -> real_actions
+        # if not self.is_continuous:
+        #     actions = actions.argmax(dim=1).detach().cpu().numpy()
+        # else:  # [1, envs, *act_shape]
+        #     actions = actions.reshape(obs.shape[1], *self.act_shape).detach().cpu().numpy()
         """
         for env_interaction: actions.shape, (envs, ) or (env, *act_shape)
         """
-        return actions
+        return acts
 
     def train_epochs(self, n_epochs: int = 1):
         train_info = {}

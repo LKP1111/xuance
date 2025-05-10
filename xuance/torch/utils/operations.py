@@ -185,6 +185,30 @@ def uniform_init_weights(given_scale):
 
     return f
 
+# ref: https://github.com/danijar/dreamerv3/blob/main/embodied/jax/nets.py#L144
+from xuance.torch.utils.layers4dreamder import RMSNorm, RMSNormChannelLast
+def trunc_normal_init_weights(fan_mode='fan_in', scale=1.0):
+    def f(m):
+        if isinstance(m, RMSNorm) or isinstance(m, RMSNormChannelLast):
+            m.weight.data.fill_(1.0)
+        else:
+            # trunc_normal_init * outscale for all weights and zero_init for all bias
+            if hasattr(m, "weight") and hasattr(m.weight, "data"):
+                fan_in, fan_out = nn.init._calculate_fan_in_and_fan_out(m.weight.data)
+                fan = {
+                    'fan_in': fan_in,
+                    'fan_out': fan_out,
+                    'avg': (fan_in + fan_out) / 2,
+                    'none': 1
+                }[fan_mode]
+                nn.init.trunc_normal_(m.weight.data, mean=0.0, std=1.0, a=-2, b=2)
+                # scale after trunc_normal
+                x = scale * 1.1368 * (1 / fan) ** 0.5
+                m.weight.data.mul_(x)
+            if hasattr(m, "bias") and hasattr(m.bias, "data"):
+                m.bias.data.fill_(0.0)
+    return f
+
 
 def sym_log(x: Tensor) -> Tensor:
     """Computes the symmetric logarithm of a tensor.
@@ -330,4 +354,3 @@ class dotdict(dict):
             if isinstance(v, dotdict):
                 _copy[k] = v.as_dict()
         return _copy
-
