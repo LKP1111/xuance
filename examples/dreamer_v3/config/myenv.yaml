@@ -92,22 +92,78 @@ tau: 0.02
 #  clip_gradients: 100.0
 
 world_model:
+  encoder:
+    # cnn
+    depth: 4
+    mults: [ 2, 3, 4, 4 ]
+    kernel: 5
+    stride: 1
+    padding: 'same'
+    # mlp
+    layers: 3
+    symlog: True
+    dense_units: 64
+    # weight_init scale
+    outscale: 1.0
+  decoder: # alias: obs_predictor
+    # cnn
+    depth: 4
+    mults: [ 2, 3, 4, 4 ]
+    kernel: 5
+    stride: 1
+    padding: 'same'
+    blocks: 8
+    # mlp
+    layers: 3
+    dense_units: 64
+    # weight_init scale
+    outscale: 1.0
   discrete_size: 32
   stochastic_size: 32
   clip_gradients: 1000.0
   learnable_initial_recurrent_state: true
-  encoder:
-    cnn_channels_multiplier: 32
-    mlp_layers: 2
-    cnn_layer_norm:
-      kw:
-        eps: 0.001
-    mlp_layer_norm:
-      kw:
-        eps: 0.001
-    dense_units: 512
+#  encoder:
+#    cnn_channels_multiplier: 32
+#    mlp_layers: 2
+#    cnn_layer_norm:
+#      kw:
+#        eps: 0.001
+#    mlp_layer_norm:
+#      kw:
+#        eps: 0.001
+#    dense_units: 512
+  # rssm (hidden_size in rssm; dense_units in others)
+  rssm:
+    # recurrent_model; alias: gru, dynamic_model, sequence_model
+    deter_size: 512  # 8 blocks of 512 hidden_size
+    stoch_size: 32
+    classes: 32
+    blocks: 8
+    # TODO
+#    dyn_layers: 1
+#    # transition_model; alias: prior
+#    img_layers: 2
+#    # representation_model; alias: posterior
+#    obs_layers: 1
+#    absolute: False  # if True, posterior will only calc from obs_embed, rather than concat of obs_embed and deter
+#    hidden_size: 64
+#    unimix: 0.01
+#    # weight_init scale
+#    outscale: 1.0
+  # predictors
+  reward_predictor: # outscale: 0.0
+    bins: 255
+    layers: 1
+    dense_units: 64
+    # weight_init scale
+    outscale: 0.0
+  discount_predictor: # outscale: 1.0
+    layers: 1
+    dense_units: 64
+    # weight_init scale
+    outscale: 1.0
   recurrent_model:
-    recurrent_state_size: 512
+    deter_size: 512
     layer_norm:
       kw:
         eps: 0.001
@@ -122,16 +178,16 @@ world_model:
     layer_norm:
       kw:
         eps: 0.001
-  observation_model:
-    cnn_channels_multiplier: 32
-    mlp_layers: 2
-    cnn_layer_norm:
-      kw:
-        eps: 0.001
-    mlp_layer_norm:
-      kw:
-        eps: 0.001
-    dense_units: 512
+#  observation_model:
+#    cnn_channels_multiplier: 32
+#    mlp_layers: 2
+#    cnn_layer_norm:
+#      kw:
+#        eps: 0.001
+#    mlp_layer_norm:
+#      kw:
+#        eps: 0.001
+#    dense_units: 512
   reward_model:
     mlp_layers: 2
     layer_norm:
@@ -166,7 +222,7 @@ learning_rate_critic: 0.00008  # 8e-5
 
 replay_ratio: 1  # gradient_step / replay_step
 running_steps: 10000  # 10k
-start_training: 1024
+start_training: 64
 
 use_grad_clip: False  # gradient normalization
 clip_type: 1

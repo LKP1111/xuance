@@ -22,7 +22,7 @@ class DreamerV3Policy(Module):  # checked
         self.stoch_state_size = self.stoch_size * self.disc_size  # 1024 = 32 * 32
         self.batch_size = self.config.batch_size
         self.seq_len = self.config.seq_len
-        self.recurrent_state_size = self.config.world_model.recurrent_model.recurrent_state_size
+        self.deter_size = self.config.world_model.recurrent_model.deter_size
         self.device = self.config.device
         self.is_continuous = self.config.is_continuous
         self.actions_dim = np.sum(self.config.act_shape)  # continuous: num of action props; discrete: num of actions
@@ -52,8 +52,8 @@ class DreamerV3Policy(Module):  # checked
                       is_first: Tensor) \
             -> Tuple[SymLogDistribution, TwoHotEncodingDistribution, Independent, Tensor, Tensor,
                      Tensor, Tensor]:
-        recurrent_state = torch.zeros(1, self.batch_size, self.recurrent_state_size, device=self.device)  # [1, 16, 512]
-        recurrent_states = torch.empty(self.seq_len, self.batch_size, self.recurrent_state_size,
+        recurrent_state = torch.zeros(1, self.batch_size, self.deter_size, device=self.device)  # [1, 16, 512]
+        recurrent_states = torch.empty(self.seq_len, self.batch_size, self.deter_size,
                                        device=self.device)  # [64, 16, 512]
         priors_logits = torch.empty(self.seq_len, self.batch_size, self.stoch_state_size, device=self.device)  # [64, 16, 1024]
         embedded_obs = self.world_model.encoder(obs)  # [64, 16, 512]
@@ -76,7 +76,7 @@ class DreamerV3Policy(Module):  # checked
             posteriors_logits[i] = posterior_logits  # z1
         latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
         """model_states: [64, 16, 32 * 32 + 512 = 1536]"""
-        reconstructed_obs: Tensor = self.world_model.observation_model(latent_states)
+        reconstructed_obs: Tensor = self.world_model.decoder(recurrent_states, posteriors)
         """po(obs, symlog_dist)"""
         po = SymLogDistribution(reconstructed_obs, dims=len(reconstructed_obs.shape[2:]))
         """pr(rews, two_hot_dist)"""
@@ -97,12 +97,12 @@ class DreamerV3Policy(Module):  # checked
                              terms: Tensor) \
             -> Dict[str, List[Any]]:
         imagined_prior = posteriors.detach().reshape(1, -1, self.stoch_state_size)
-        recurrent_state = recurrent_states.detach().reshape(1, -1, self.recurrent_state_size)  # [1, 1024, 512]
+        recurrent_state = recurrent_states.detach().reshape(1, -1, self.deter_size)  # [1, 1024, 512]
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)  # [1, 1024, 1536]
         imagined_trajectories = torch.empty(
             self.config.horizon + 1,
             self.batch_size * self.seq_len,
-            self.stoch_state_size + self.recurrent_state_size,
+            self.stoch_state_size + self.deter_size,
             device=self.device,
         )  # [16, 1024, 1536]
         imagined_trajectories[0] = imagined_latent_state

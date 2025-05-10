@@ -31,57 +31,139 @@ env_config:
   screen_size: 64
 activation: 'silu'
 
-actor:
-  ent_coef: 0.0003
-  min_std: 0.1
-  max_std: 1.0
-  init_std: 2.0
-  mlp_layers: 2
-  layer_norm:
-    kw:
-      eps: 0.001
-  dense_units: 512
-  clip_gradients: 100.0
-  unimix: 0.01
-  action_clip: 1.0
-  moments:
-    decay: 0.99
-    max: 1.0
-    percentile:
-      low: 0.05
-      high: 0.95
-critic:
-  mlp_layers: 2
-  layer_norm:
-    kw:
-      eps: 0.001
-  dense_units: 512
-  soft_update_freq: 1
-  tau: 0.02
-  bins: 255
-  clip_gradients: 100.0
-world_model:
-  discrete_size: 32
-  stochastic_size: 32
-  kl_dynamic: 0.5
+# action_clip: 1.0
+loss_scales:
+  # kl
+  kl_dynamic: 1.0
   kl_representation: 0.1
   kl_free_nats: 1.0
   kl_regularizer: 1.0
   continue_scale_factor: 1.0
+  # actor
+  ent_coef: 0.0003
+
+moments:
+  decay: 0.99
+  max: 1.0
+  percentile:
+    low: 0.05
+    high: 0.95
+
+actor:
+  layers: 3
+  dense_units: 64
+  init_std: 2.0
+  min_std: 0.1
+  max_std: 1.0
+  unimix: 0.01
+  outscale: 0.01
+
+critic:
+  layers: 3
+  dense_units: 64
+  bins: 255
+  outscale: 0.0
+
+soft_update_freq: 1
+tau: 0.02
+#actor:
+#  ent_coef: 0.0003
+#  min_std: 0.1
+#  max_std: 1.0
+#  init_std: 2.0
+#  mlp_layers: 2
+#  layer_norm:
+#    kw:
+#      eps: 0.001
+#  dense_units: 512
+#  clip_gradients: 100.0
+#  unimix: 0.01
+#  action_clip: 1.0
+
+
+#critic:
+#  mlp_layers: 2
+#  layer_norm:
+#    kw:
+#      eps: 0.001
+#  dense_units: 512
+
+#  bins: 255
+#  clip_gradients: 100.0
+
+world_model:
+  encoder:
+    # cnn
+    depth: 4
+    mults: [ 2, 3, 4, 4 ]
+    kernel: 5
+    stride: 1
+    padding: 'same'
+    # mlp
+    layers: 3
+    symlog: True
+    dense_units: 64
+    # weight_init scale
+    outscale: 1.0
+  decoder: # alias: obs_predictor
+    # cnn
+    depth: 4
+    mults: [ 2, 3, 4, 4 ]
+    kernel: 5
+    stride: 1
+    padding: 'same'
+    blocks: 8
+    # mlp
+    layers: 3
+    dense_units: 64
+    # weight_init scale
+    outscale: 1.0
+  discrete_size: 32
+  stochastic_size: 32
   clip_gradients: 1000.0
   learnable_initial_recurrent_state: true
-  encoder:
-    cnn_channels_multiplier: 32
-    mlp_layers: 2
-    cnn_layer_norm:
-      kw:
-        eps: 0.001
-    mlp_layer_norm:
-      kw:
-        eps: 0.001
-    dense_units: 512
+#  encoder:
+#    cnn_channels_multiplier: 32
+#    mlp_layers: 2
+#    cnn_layer_norm:
+#      kw:
+#        eps: 0.001
+#    mlp_layer_norm:
+#      kw:
+#        eps: 0.001
+#    dense_units: 512
+  # rssm (hidden_size in rssm; dense_units in others)
+  rssm:
+    # recurrent_model; alias: gru, dynamic_model, sequence_model
+    deter_size: 512  # 8 blocks of 512 hidden_size
+    stoch_size: 32
+    classes: 32
+    blocks: 8
+    # TODO
+#    dyn_layers: 1
+#    # transition_model; alias: prior
+#    img_layers: 2
+#    # representation_model; alias: posterior
+#    obs_layers: 1
+#    absolute: False  # if True, posterior will only calc from obs_embed, rather than concat of obs_embed and deter
+#    hidden_size: 64
+#    unimix: 0.01
+#    # weight_init scale
+#    outscale: 1.0
+  # predictors
+  reward_predictor: # outscale: 0.0
+    bins: 255
+    layers: 1
+    dense_units: 64
+    # weight_init scale
+    outscale: 0.0
+  discount_predictor: # outscale: 1.0
+    layers: 1
+    dense_units: 64
+    # weight_init scale
+    outscale: 1.0
   recurrent_model:
-    recurrent_state_size: 512
+    deter_size: 512
     layer_norm:
       kw:
         eps: 0.001
@@ -96,16 +178,16 @@ world_model:
     layer_norm:
       kw:
         eps: 0.001
-  observation_model:
-    cnn_channels_multiplier: 32
-    mlp_layers: 2
-    cnn_layer_norm:
-      kw:
-        eps: 0.001
-    mlp_layer_norm:
-      kw:
-        eps: 0.001
-    dense_units: 512
+#  observation_model:
+#    cnn_channels_multiplier: 32
+#    mlp_layers: 2
+#    cnn_layer_norm:
+#      kw:
+#        eps: 0.001
+#    mlp_layer_norm:
+#      kw:
+#        eps: 0.001
+#    dense_units: 512
   reward_model:
     mlp_layers: 2
     layer_norm:
@@ -134,9 +216,10 @@ parallels: 1
 buffer_size: 1000000  # 1e6
 batch_size: 16
 seq_len: 64
-learning_rate_model: 0.0001  # 1e-4
-learning_rate_actor: 0.00008  # 8e-5
-learning_rate_critic: 0.00008  # 8e-5
+# TODO
+learning_rate_model: 0.00004  # 4e-5
+learning_rate_actor: 0.00004  # 4e-5
+learning_rate_critic: 0.00004  # 4e-5
 
 replay_ratio: 1  # gradient_step / replay_step
 running_steps: 10000  # 10k

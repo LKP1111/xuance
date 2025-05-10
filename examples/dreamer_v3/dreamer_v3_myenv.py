@@ -75,6 +75,8 @@ def parse_args():
     # 10k
     """
     6.6it/s
+    seed_1_2025_0511_001530(1e-4, 8e-5 400step ok)
+    
     """
     parser.add_argument("--running-steps", type=int, default=10_000)  # 10k
     parser.add_argument("--eval-interval", type=int, default=200)  # 50 logs

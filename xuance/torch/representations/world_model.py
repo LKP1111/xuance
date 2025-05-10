@@ -26,238 +26,170 @@ from xuance.torch.utils.layers4dreamder import (
     MultiDecoder,
     MultiEncoder,
     ModuleType,
-    cnn_forward, RMSNorm
+    cnn_forward, RMSNorm, RMSNormChannelLast, BlockLinear
 )
 from xuance.torch.utils import sym_log, dotdict, init_weights, uniform_init_weights, compute_stochastic_state
 from xuance.torch.utils.operations import trunc_normal_init_weights
 
 
-class CNNEncoder(nn.Module):
-    """The Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
-    kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.LayerNorm`
-    is used after the convolution. This 4-stages model assumes that the image
-    is a 64x64 and it ends with a resolution of 4x4. If more than one image is to be encoded, then those will
-    be concatenated on the channel dimension and fed to the encoder.
-
-    Args:
-        input_channels (Sequence[int]): the input channels, one for each image observation to encode.
-        image_size (Tuple[int, int]): the image size as (Height,Width).
-        channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
-            will be [1, 2, 4, 8] * `channels_multiplier`.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormChannelLast.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
-        activation (ModuleType, optional): the activation function.
-            Defaults to nn.SiLU.
-        stages (int, optional): how many stages for the CNN.
-    """
-
+class Encoder(nn.Module):
     def __init__(
             self,
-            input_channels: Sequence[int],
-            image_size: Tuple[int, int],
-            channels_multiplier: int,
-            layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
-            layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
-            activation: ModuleType = nn.SiLU,
-            stages: int = 4,
-    ) -> None:
+            # input_obs_shape
+            obs_shape: Sequence[int],
+            # encoder
+            depth: int = 64,
+            mults: Sequence[int] = [2, 3, 4, 4],
+            kernel: int = 5,
+            stride: int = 1,
+            padding: Union[str, int] = 'same',
+            layers: int = 3,
+            symlog: bool = True,
+            dense_units: int = 1024,
+            outscale: float = 1.0,
+            # others
+            pixel: bool = True):
         super().__init__()
-        self.input_dim = (sum(input_channels), *image_size)
-        self.model = nn.Sequential(
-            CNN(
-                input_channels=self.input_dim[0],
-                hidden_channels=(torch.tensor([2 ** i for i in range(stages)]) * channels_multiplier).tolist(),
-                cnn_layer=nn.Conv2d,
-                layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity},
-                activation=activation,
-                norm_layer=[layer_norm_cls] * stages,
-                norm_args=[
-                    {**layer_norm_kw, "normalized_shape": (2 ** i) * channels_multiplier} for i in range(stages)
-                ],
-            ),
-            nn.Flatten(-3, -1),
-        )
-        with torch.no_grad():
-            self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
+        # store for forward
+        self.obs_shape = obs_shape
+        self.symlog = symlog
+        self.pixel = pixel
+        # net_init
+        li = []
+        if not pixel:
+            # <=2d vec_obs
+            assert len(obs_shape) <= 2
+            in_dim = int(np.prod(obs_shape))
+            for _ in range(layers):
+                li.append(nn.Linear(in_dim, dense_units))
+                li.append(RMSNorm(dense_units))
+                li.append(nn.SiLU())
+                in_dim = dense_units
+        else:
+            # 3d img_obs
+            assert len(obs_shape) == 3
+            # channel first, gray or rgb
+            assert obs_shape[0] == 1 or obs_shape[0] == 3
+            in_dim = obs_shape[0]
+            depths = (np.array(mults) * depth).tolist()
+            for d in depths:
+                li.append(nn.Conv2d(in_dim, d,
+                                    kernel_size=kernel,
+                                    stride=stride,
+                                    padding=padding))
+                # v3_official_new: x = x.reshape((B, H // 2, 2, W // 2, 2, C)).max((2, 4))
+                li.append(nn.MaxPool2d(2, 2))
+                li.append(RMSNormChannelLast(d))
+                li.append(nn.SiLU())
+                in_dim = d
+        self.model = nn.Sequential(*li)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
 
-    def forward(self, obs: Tensor) -> Tensor:
-        return cnn_forward(self.model, obs, obs.shape[-3:], (-1,))
+    def forward(self, obs: Tensor):
+        # [~, 3, 64, 64] -> [B, 3, 64, 64]
+        batch_shape = obs.shape[:len(obs.shape) - len(self.obs_shape)]
+        obs = obs.view(-1, *self.obs_shape)
+        # sym_log & flatten for vec_obs
+        get_obs = sym_log if self.symlog and not self.pixel else lambda x: x
+        if not self.pixel and len(self.obs_shape) != 1:
+            obs = obs.flatten(len(batch_shape), -1)
+        out = self.model(get_obs(obs))
+        return out.reshape(*batch_shape, -1)  # [~, -1]
 
 
-class CNNDecoder(nn.Module):
-    """The exact inverse of the `CNNEncoder` class. It assumes an initial resolution
-    of 4x4, and in 4 stages reconstructs the observation image to 64x64. If multiple
-    images are to be reconstructed, then it will create a dictionary with an entry
-    for every reconstructed image. No bias is used if a `nn.LayerNorm` is used after
-    the `nn.Conv2dTranspose` layer.
 
-    Args:
-        output_channels (Sequence[int]): the output channels, one for every image observation.
-        channels_multiplier (int): the channels multiplier, same for the encoder network.
-        latent_state_size (int): the size of the latent state. Before applying the decoder,
-            a `nn.Linear` layer is used to project the latent state to a feature vector
-            of dimension [8 * `channels_multiplier`, 4, 4].
-        cnn_encoder_output_dim (int): the output of the image encoder. It should be equal to
-            8 * `channels_multiplier` * 4 * 4.
-        image_size (Tuple[int, int]): the final image size.
-        activation (nn.Module, optional): the activation function.
-            Defaults to nn.SiLU.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormChannelLast.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
-        stages (int): how many stages in the CNN decoder.
-    """
-
+class Decoder(nn.Module):
     def __init__(
             self,
-            output_channels: Sequence[int],
-            channels_multiplier: int,
-            latent_state_size: int,
-            cnn_encoder_output_dim: int,
-            image_size: Tuple[int, int],
-            activation: nn.Module = nn.SiLU,
-            layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
-            layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
-            stages: int = 4,
-    ) -> None:
+            # input_latent_size: deter & stoch; output_obs_shape
+            deter_size: int,
+            stoch_size: int,
+            obs_shape: Sequence[int],
+            # encoder
+            depth: int = 64,
+            mults: Sequence[int] = [2, 3, 4, 4],
+            kernel: int = 5,
+            stride: int = 1,
+            padding: Union[str, int] = 'same',
+            blocks: int = 8,
+            layers: int = 3,
+            dense_units: int = 1024,
+            outscale: float = 1.0,
+            # others
+            pixel: bool = True):
         super().__init__()
-        self.output_channels = output_channels
-        self.cnn_encoder_output_dim = cnn_encoder_output_dim
-        self.image_size = image_size
-        self.output_dim = (sum(output_channels), *image_size)
-        self.model = nn.Sequential(
-            nn.Linear(latent_state_size, cnn_encoder_output_dim),
-            nn.Unflatten(1, (-1, 4, 4)),
-            DeCNN(
-                input_channels=(2 ** (stages - 1)) * channels_multiplier,
-                hidden_channels=(
-                                        torch.tensor(
-                                            [2 ** i for i in reversed(range(stages - 1))]) * channels_multiplier
-                                ).tolist()
-                                + [self.output_dim[0]],
-                cnn_layer=nn.ConvTranspose2d,
-                layer_args=[
-                               {"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity}
-                               for _ in range(stages - 1)
-                           ]
-                           + [{"kernel_size": 4, "stride": 2, "padding": 1}],
-                activation=[activation for _ in range(stages - 1)] + [None],
-                norm_layer=[layer_norm_cls for _ in range(stages - 1)] + [None],
-                norm_args=[
-                              {**layer_norm_kw, "normalized_shape": (2 ** (stages - i - 2)) * channels_multiplier}
-                              for i in range(stages - 1)
-                          ]
-                          + [None],
-            ),
-        )
+        # store for forward
+        self.obs_shape = obs_shape
+        self.pixel = pixel
+        # net_init
+        li = []
+        if not pixel:
+            # <=2d vec_obs
+            assert len(obs_shape) <= 2
+            in_dim = deter_size + stoch_size
+            for _ in range(layers):
+                li.append(nn.Linear(in_dim, dense_units))
+                li.append(RMSNorm(dense_units))
+                li.append(nn.SiLU())
+                in_dim = dense_units
+            li.append(nn.Linear(dense_units, int(np.prod(obs_shape))))
+        else:
+            # 3d img_obs
+            assert len(obs_shape) == 3
+            # channel first, gray or rgb
+            assert obs_shape[0] == 1 or obs_shape[0] == 3
+            # calc the input shape of Conv2d: [256, 4, 4]
+            depths = (np.array(mults) * depth).tolist()
+            factor = 2 ** len(depths)
+            conv_in = [obs_shape[-1] // factor] * 2
+            self.shape = [depths[-1], *conv_in]
+            # u: Conv2d input size; g: blocks
+            u, g = int(np.prod(self.shape)), blocks  # u = 4096, g = 8
+            # deter -> block linear -> shape of convt_in
+            self.bl = BlockLinear(deter_size, u, g)
+            # stoch -> linear -> shape of convt_in
+            self.l = nn.Sequential(
+                nn.Linear(stoch_size, dense_units * 2),
+                RMSNorm(dense_units * 2), nn.SiLU(),
+                nn.Linear(dense_units * 2, u)
+            )
+            # norm & act after deter + stoch
+            self.norm_act = nn.Sequential(RMSNormChannelLast(depths[-1]), nn.SiLU())
+            # conv
+            in_channel = self.shape[0]
+            for d in reversed([obs_shape[0], ] + depths[:-1]):
+                li.append(nn.Conv2d(in_channel, d,
+                                    kernel_size=kernel,
+                                    stride=stride,
+                                    padding=padding))
+                # v3_official_new: x = x.repeat(2, -2).repeat(2, -3)
+                li.append(nn.UpsamplingNearest2d(scale_factor=2))  # unsampling last 2 dimensions
+                li.append(RMSNormChannelLast(d))
+                li.append(nn.SiLU())
+                in_channel = d
+        self.model = nn.Sequential(*li)
+        # wb_init
+        self.apply(trunc_normal_init_weights(scale=outscale))
 
-    def forward(self, latent_states: Tensor) -> List[Tensor]:
-        cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
-        return torch.split(cnn_out, self.output_channels, -3)
-
-
-class MLPEncoder(nn.Module):
-    """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
-    If more than one vector is to be encoded, then those will concatenated on the last
-    dimension before being fed to the encoder.
-
-    Args:
-        input_dims (Sequence[int]): the dimensions of every vector to encode.
-        mlp_layers (int, optional): how many mlp layers.
-            Defaults to 4.
-        dense_units (int, optional): the dimension of every mlp.
-            Defaults to 512.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNorm.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
-        activation (ModuleType, optional): the activation function after every layer.
-            Defaults to nn.SiLU.
-        sym_log_inputs (bool, optional): whether to squash the input with the sym_log function.
-            Defaults to True.
-    """
-
-    def __init__(
-            self,
-            input_dims: Sequence[int],
-            mlp_layers: int = 4,
-            dense_units: int = 512,
-            layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
-            layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
-            activation: ModuleType = nn.SiLU,
-            sym_log_inputs: bool = True,
-    ) -> None:
-        super().__init__()
-        self.input_dim = sum(input_dims)  # [4]
-        self.model = MLP(
-            self.input_dim,
-            None,
-            [dense_units] * mlp_layers,
-            activation=activation,
-            layer_args={"bias": layer_norm_cls == nn.Identity},
-            norm_layer=layer_norm_cls,
-            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
-        )
-        self.output_dim = dense_units
-        self.sym_log_inputs = sym_log_inputs  # True
-
-    def forward(self, obs: Tensor) -> Tensor:
-        # x = torch.cat([sym_log(obs[k]) if self.sym_log_inputs else obs[k] for k in self.keys], -1)
-        return self.model(sym_log(obs))
-
-
-class MLPDecoder(nn.Module):
-    """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
-    If more than one vector is to be decoded, then it will create a dictionary with an entry
-    for every reconstructed vector.
-
-    Args:
-        keys (Sequence[str]): the keys representing the vector observations to decode.
-        output_dims (Sequence[int]): the dimensions of every vector to decode.
-        latent_state_size (int): the dimension of the latent state.
-        mlp_layers (int, optional): how many mlp layers.
-            Defaults to 4.
-        dense_units (int, optional): the dimension of every mlp.
-            Defaults to 512.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNorm.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
-        activation (ModuleType, optional): the activation function after every layer.
-            Defaults to nn.SiLU.
-    """
-
-    def __init__(
-        self,
-        output_dims: Sequence[int],
-        latent_state_size: int,
-        mlp_layers: int = 4,
-        dense_units: int = 512,
-        activation: ModuleType = nn.SiLU,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
-        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
-    ) -> None:
-        super().__init__()
-        self.output_dims = output_dims
-        self.model = MLP(
-            latent_state_size,
-            None,
-            [dense_units] * mlp_layers,
-            activation=activation,
-            layer_args={"bias": layer_norm_cls == nn.Identity},
-            norm_layer=layer_norm_cls,
-            norm_args={**layer_norm_kw, "normalized_shape": dense_units},
-        )
-        self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
-
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        x = self.model(latent_states)
-        return self.heads[0](x)  # revised to adapt to xuance
+    def forward(self, deter, stoch):
+        batch_shape = deter.shape[:-1]
+        x0, x1 = deter, stoch  # x0: [1, 64, 8192]; x1: [1, 64, 32, 64]
+        x1 = x1.reshape((*x1.shape[:-2], -1))
+        x0 = x0.reshape((-1, x0.shape[-1]))  # [64, 8192]
+        x1 = x1.reshape((-1, x1.shape[-1]))  # [64, 2048]
+        if not self.pixel:
+            obs = self.model(torch.cat([x0, x1], dim=-1))
+        else:
+            # deter -> block linear -> shape of conv_in
+            x0 = self.bl(x0)  # -> [64, 4096]
+            x0 = x0.view(-1, *self.shape)
+            # stoch -> linear -> shape of conv_in
+            x1 = self.l(x1).view(-1, *self.shape)
+            x = self.norm_act(x0 + x1)
+            # convt
+            obs = self.model(x)
+        return obs.reshape(*batch_shape, *self.obs_shape)  # [~, *obs_shape]
 
 
 class RecurrentModel(nn.Module):
@@ -269,7 +201,7 @@ class RecurrentModel(nn.Module):
     Args:
         input_size (int): the input size of the model.
         dense_units (int): the number of dense units.
-        recurrent_state_size (int): the size of the recurrent state.
+        deter_size (int): the size of the recurrent state.
         activation_fn (nn.Module): the activation function.
             Default to SiLU.
         layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
@@ -281,7 +213,7 @@ class RecurrentModel(nn.Module):
     def __init__(
             self,
             input_size: int,
-            recurrent_state_size: int,
+            deter_size: int,
             dense_units: int,
             activation_fn: nn.Module = nn.SiLU,
             layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
@@ -299,13 +231,13 @@ class RecurrentModel(nn.Module):
         )
         self.rnn = LayerNormGRUCell(
             dense_units,
-            recurrent_state_size,
+            deter_size,
             bias=False,
             batch_first=False,
             layer_norm_cls=layer_norm_cls,
             layer_norm_kw=layer_norm_kw,
         )
-        self.recurrent_state_size = recurrent_state_size
+        self.deter_size = deter_size
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
         """
@@ -363,11 +295,11 @@ class RSSM(nn.Module):
         self.unimix = unimix
         if learnable_initial_recurrent_state:
             self.initial_recurrent_state = nn.Parameter(
-                torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+                torch.zeros(recurrent_model.deter_size, dtype=torch.float32)
             )
         else:
             self.register_buffer(
-                "initial_recurrent_state", torch.zeros(recurrent_model.recurrent_state_size, dtype=torch.float32)
+                "initial_recurrent_state", torch.zeros(recurrent_model.deter_size, dtype=torch.float32)
             )
 
     def get_initial_states(self, batch_shape: Union[Sequence[int], torch.Size]) -> Tuple[Tensor, Tensor]:
@@ -485,7 +417,7 @@ class RSSM(nn.Module):
 #     The wrapper class of the Dreamer_v2 Actor model.
 #
 #     Args:
-#         latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
+#         latent_state_size (int): the dimension of the latent state (stochastic size + deter_size).
 #         act_shape (Sequence[int]): the dimension in output of the actor.
 #             The number of actions if continuous, the dimension of the action if discrete.
 #         is_continuous (bool): whether or not the actions are continuous.
@@ -577,7 +509,7 @@ class RSSM(nn.Module):
 #         where * means any number of dimensions including None.
 #
 #         Args:
-#             state (Tensor): the current state of shape (batch_size, *, stochastic_size + recurrent_state_size).
+#             state (Tensor): the current state of shape (batch_size, *, stochastic_size + deter_size).
 #             greedy (bool): whether or not to sample the actions.
 #                 Default to False.
 #             mask (Dict[str, Tensor], optional): the mask to use on the actions.
@@ -733,7 +665,7 @@ class PlayerDV3(nn.Module):
         act_shape (Sequence[int]): the dimension of the actions.
         num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
-        recurrent_state_size (int): the size of the recurrent state.
+        deter_size (int): the size of the recurrent state.
         transition_model (Module): the transition model.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
@@ -751,7 +683,7 @@ class PlayerDV3(nn.Module):
             act_shape: Sequence[int],
             num_envs: int,
             stochastic_size: int,
-            recurrent_state_size: int,
+            deter_size: int,
             device: torch.device,
             discrete_size: int = 32,
             actor_type: Optional[str] = None,
@@ -763,7 +695,7 @@ class PlayerDV3(nn.Module):
         self.act_shape = act_shape
         self.num_envs = num_envs
         self.stochastic_size = stochastic_size
-        self.recurrent_state_size = recurrent_state_size
+        self.deter_size = deter_size
         self.device = device
         self.discrete_size = discrete_size
         self.actor_type = actor_type
@@ -829,7 +761,7 @@ class WorldModel(nn.Module):
     Args:
         encoder (Module): the encoder.
         rssm (RSSM): the rssm.
-        observation_model (Module): the observation model.
+        decoder (Module): the observation model.
         reward_model (Module): the reward model.
         continue_model (Module, optional): the continue model.
     """
@@ -838,14 +770,14 @@ class WorldModel(nn.Module):
             self,
             encoder,
             rssm: RSSM,
-            observation_model,
+            decoder,
             reward_model,
             continue_model,
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
-        self.observation_model = observation_model
+        self.decoder = decoder
         self.reward_model = reward_model
         self.continue_model = continue_model
 
@@ -905,45 +837,28 @@ class DreamerV3WorldModel(nn.Module):
         critic_config = config.critic
         """deter_size; stoch_size; model_state_size"""
         # Sizes
-        recurrent_state_size = world_model_config.recurrent_model.recurrent_state_size
+        deter_size = world_model_config.recurrent_model.deter_size
         stochastic_size = world_model_config.stochastic_size * world_model_config.discrete_size
-        latent_state_size = stochastic_size + recurrent_state_size
+        latent_state_size = stochastic_size + deter_size
         # Define models
-        cnn_stages = int(np.log2(config.env_config.screen_size) - np.log2(4))  # 4
-        cnn_encoder = (
-            CNNEncoder(
-                input_channels=[int(np.prod(obs_space.shape[:-2]))],
-                image_size=obs_space.shape[-2:],
-                channels_multiplier=world_model_config.encoder.cnn_channels_multiplier,
-                layer_norm_cls=LayerNormChannelLast,
-                layer_norm_kw=world_model_config.encoder.cnn_layer_norm.kw,
-                activation=nn.SiLU,
-                stages=cnn_stages,
-            )
-            if config.pixel else None
-        )
-        mlp_encoder = (
-            MLPEncoder(
-                input_dims=[obs_space.shape[0]],
-                mlp_layers=world_model_config.encoder.mlp_layers,
-                dense_units=world_model_config.encoder.dense_units,
-                activation=nn.SiLU,
-                layer_norm_cls=LayerNorm,
-                layer_norm_kw=world_model_config.encoder.mlp_layer_norm.kw,
-            )
-            if not config.pixel else None
-        )
-        encoder = MultiEncoder(cnn_encoder, mlp_encoder).to(config.device)
-
+        obs_shape = obs_space.shape
+        wm_config = config.world_model
+        encoder = Encoder(obs_shape=obs_shape, pixel=config.pixel, **wm_config.encoder).to(config.device)
+        decoder = Decoder(
+            deter_size=(t := wm_config.rssm)['deter_size'],
+            stoch_size=t['stoch_size'] * t['classes'],
+            obs_shape=obs_shape, pixel=config.pixel,
+            **wm_config.decoder
+        ).to(config.device)
         recurrent_model = RecurrentModel(
             input_size=int(sum(act_shape) + stochastic_size),
-            recurrent_state_size=world_model_config.recurrent_model.recurrent_state_size,
+            deter_size=world_model_config.recurrent_model.deter_size,
             dense_units=world_model_config.recurrent_model.dense_units,
             layer_norm_cls=LayerNorm,
             layer_norm_kw=world_model_config.recurrent_model.layer_norm.kw,
         )
-        represention_model_input_size = encoder.output_dim
-        represention_model_input_size += recurrent_state_size
+        represention_model_input_size = encoder(torch.zeros(1, *obs_shape).to(config.device)).shape[-1]
+        represention_model_input_size += deter_size
         representation_ln_cls = LayerNorm
         representation_model = MLP(
             input_dims=represention_model_input_size,  # (h1, x1) -> z1
@@ -962,7 +877,7 @@ class DreamerV3WorldModel(nn.Module):
         )
         transition_ln_cls = LayerNorm
         transition_model = MLP(
-            input_dims=recurrent_state_size,
+            input_dims=deter_size,
             output_dim=stochastic_size,
             hidden_sizes=[world_model_config.transition_model.hidden_size],
             activation=nn.SiLU,
@@ -987,34 +902,6 @@ class DreamerV3WorldModel(nn.Module):
             unimix=config.unimix,
             learnable_initial_recurrent_state=config.world_model.learnable_initial_recurrent_state,
         ).to(config.device)
-
-        cnn_decoder = (
-            CNNDecoder(
-                output_channels=[int(np.prod(obs_space.shape[:-2]))],
-                channels_multiplier=world_model_config.observation_model.cnn_channels_multiplier,
-                latent_state_size=latent_state_size,
-                cnn_encoder_output_dim=cnn_encoder.output_dim,
-                image_size=obs_space.shape[-2:],
-                activation=nn.SiLU,
-                layer_norm_cls=LayerNormChannelLast,
-                layer_norm_kw=world_model_config.observation_model.mlp_layer_norm.kw,
-                stages=cnn_stages,
-            )
-            if config.pixel else None
-        )
-        mlp_decoder = (
-            MLPDecoder(
-                output_dims=[obs_space.shape[0]],
-                latent_state_size=latent_state_size,
-                mlp_layers=world_model_config.observation_model.mlp_layers,
-                dense_units=world_model_config.observation_model.dense_units,
-                activation=nn.SiLU,
-                layer_norm_cls=LayerNorm,
-                layer_norm_kw=world_model_config.observation_model.mlp_layer_norm.kw,
-            )
-            if not config.pixel else None
-        )
-        observation_model = MultiDecoder(cnn_decoder, mlp_decoder).to(config.device)
 
         reward_ln_cls = LayerNorm
         reward_model = MLP(
@@ -1045,10 +932,13 @@ class DreamerV3WorldModel(nn.Module):
                 "normalized_shape": world_model_config.discount_model.dense_units,
             },
         ).to(config.device)
+
+
+
         world_model = WorldModel(
             encoder.apply(init_weights),
             rssm,
-            observation_model.apply(init_weights),
+            decoder.apply(init_weights),
             reward_model.apply(init_weights),
             continue_model.apply(init_weights),
         )
@@ -1065,10 +955,10 @@ class DreamerV3WorldModel(nn.Module):
             rssm.representation_model.model[-1].apply(uniform_init_weights(1.0))
             world_model.reward_model.model[-1].apply(uniform_init_weights(0.0))
             world_model.continue_model.model[-1].apply(uniform_init_weights(1.0))
-            if mlp_decoder is not None:
-                mlp_decoder.heads.apply(uniform_init_weights(1.0))
-            if cnn_decoder is not None:
-                cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
+            # if mlp_decoder is not None:
+            #     mlp_decoder.heads.apply(uniform_init_weights(1.0))
+            # if cnn_decoder is not None:
+            #     cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
 
         player = PlayerDV3(  # encoder, rssm, actor
             copy.deepcopy(world_model.encoder),
@@ -1077,7 +967,7 @@ class DreamerV3WorldModel(nn.Module):
             act_shape,
             config.parallels,
             config.world_model.stochastic_size,
-            config.world_model.recurrent_model.recurrent_state_size,
+            config.world_model.recurrent_model.deter_size,
             config.device,
             discrete_size=config.world_model.discrete_size,
         )
