@@ -1,50 +1,90 @@
 import argparse
+import random
+
 import numpy as np
 from copy import deepcopy
+
+from gymnasium.spaces import Box, Discrete
+
 from xuance.torch.utils.operations import set_seed
 from xuance.common import get_configs, recursive_dict_update
-from xuance.environment import make_envs
+from xuance.environment import make_envs, RawEnvironment, REGISTRY_ENV
 from xuance.torch.agents import DreamerV3Agent
 
+class MyEnv(RawEnvironment):
+    def __init__(self, config):
+        super(MyEnv, self).__init__()
+        self.env_id = config.env_id
+        self.observation_space = Box(-200, 200, shape=[1, ], dtype=np.int16)
+        self.action_space = Discrete(3)  # 0, 1, 2: -1, 0, 1
+        self.max_episode_steps = 500
+        self._current_step = 0
+        # set seeds
+        self.action_space.seed(seed=config.env_seed)
+        # scale & repeat
+        self.scale = 4
+        # obs
+        # self.o = np.array(0, dtype=np.int16)
+        self.o = np.array(random.randint(-3, 3) * self.scale, dtype=np.int16)
+
+    def reset(self, **kwargs):
+        self._current_step = 0
+        # self.o = np.array(0, dtype=np.int16)
+        self.o = np.array(random.randint(-3, 3) * self.scale, dtype=np.int16)
+        return self.o, {}
+        # return self.observation_space.sample(), {}
+
+    def step(self, action):
+        nxt_o = np.clip(self.o + (action - 1) * self.scale,
+                        self.observation_space.low[0], self.observation_space.high[0])
+        r = 1 if abs(nxt_o) < abs(self.o) else (-1 if abs(nxt_o) > abs(self.o) else 0)
+        r *= self.scale
+        # update obs
+        self.o = nxt_o
+
+        self._current_step += 1
+        truncated = False if self._current_step < self.max_episode_steps else True
+        terminated = truncated
+        info = {}
+        return nxt_o, r, terminated, truncated, info
+
+    def render(self, *args, **kwargs):
+        img = np.full([400, 400, 3], 0, dtype=np.uint8)  # uint8: [0, 2^8 - 1]
+        # x: u -> d; y: l -> r
+        sx, sy = 200, 200
+        x, y = sx, sy + self.o
+        for i in range(sx - 2, sx + 2):
+            for j in range(sy - 2, sy + 2):
+                img[i, j, 1] = 255
+        for i in range(max(0, x - 10), min(399, x + 10)):
+            for j in range(max(0, y - 10), min(399, y + 10)):
+                img[i, j, 0] = 255
+        return img
+
+    def close(self):
+        return
+
 def parse_args():
-    parser = argparse.ArgumentParser("Example of XuanCe: DreamerV3 for CartPole.")
-    parser.add_argument("--env-id", type=str, default="CartPole-v1")
-    parser.add_argument("--log-dir", type=str, default="./logs/CartPole-v1/")
-    parser.add_argument("--model-dir", type=str, default="./models/CartPole-v1/")
+    # MyEnv/myenv
+    parser = argparse.ArgumentParser("Example of XuanCe: DreamerV3 for myenv.")
+    parser.add_argument("--env-id", type=str, default="myenv")
+    parser.add_argument("--log-dir", type=str, default="./logs/myenv/")
+    parser.add_argument("--model-dir", type=str, default="./models/myenv/")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--harmony", type=bool, default=False)
-
     """
-    12m, f16, 4596MB
-    Total params: 10,446,084
-    seed_1_2025_0506_234045 (12m,4e-5,ratio0.5) x
-    seed_1_2025_0507_021601 (12m,4e-3,4e-5,ratio0.5) x
-    seed_1_2025_0507_021632 (12m,4e-4,4e-5,ratio0.5) x
-    seed_1_2025_0507_231944 (12m,4e-3,1e-5,ratio0.5) x
-    seed_1_2025_0507_232132 (12m,4e-3,4e-6,ratio0.5) x
-    f32, 5144MiB, 8.9it/s
-    seed_1_2025_0508_230457(12m,4e-3,4e-4,ratio0.5,f32) x
-    seed_1_2025_0508_230648(12m,4e-3,4e-5,ratio0.5,f32) (<10k,b1;>10k x)
-    seed_1_2025_0509_001710(12m,4e-5,ratio0.5,f32) x
-    seed_1_2025_0509_003415(12m,4e-3,1e-5,ratio0.5,f32) (500) x
-    seed_1_2025_0509_003604(12m,4e-3,8e-5,ratio0.5,f32) x
-    seed_1_2025_0509_011346(12m,4e-3,2e-5,ratio0.5,f32) x
-    seed_1_2025_0509_011607(12m,1e-3,4e-5,ratio0.5,f32) x
-    (12m,4e-3,4e-5,ratio0.5,f32,kl_dyn0.5,cont_layer3) x
-    (12m,1e-3,4e-5,ratio0.5,f32,kl_dyn0.5,cont_layer3) x
-    seed_1_2025_0510_191214(12m,4e-3,4e-5,ratio1,f32) x
-    
-    1m, f32, 10.2it/s
-    seed_1_2025_0509_022723(1m,4e-3,4e-5,ratio0.5,f32) (500) x
-    seed_1_2025_0509_022751(1m,4e-3,4e-4,ratio0.5,f32) (500) x
-    
-    50m, f32, 8956MiB
-    seed_1_2025_0510_192244(50m,4e-3,4e-5,ratio0.5,f32) x
+    config1m
+    Total params: 695,172;
+    1584MiB; 
+    st: 0
+        seed_1_2025_0510_17134, 22.4k, 2min, step -> 0
+    st: random [-3, 3] * 4
+        seed_1_2025_0510_173416(x)
+        seed_1_2025_0511_013803(1e-4,8e-5) -> 0 -> x -> 0
+        seed_1_2025_0511_013904(4e-3,4e-5) xx
+        
     """
-    # config1m
-    # Total params: 695,172;
-    # 1584MiB; 10k, 9.4it/s
-    parser.add_argument("--running-steps", type=int, default=50_000)  # 10k
+    parser.add_argument("--running-steps", type=int, default=10_000)  # 10k
     parser.add_argument("--eval-interval", type=int, default=200)  # 50 logs
     parser.add_argument("--replay-ratio", type=int, default=0.5)
 
@@ -52,6 +92,13 @@ def parse_args():
     parser.add_argument('--parallels', type=int, default=1)
     parser.add_argument("--test", type=int, default=0)
     parser.add_argument("--benchmark", type=int, default=1)
+
+    # render
+    parser.add_argument('--render', type=str, default=True)
+    parser.add_argument('--render-mode', type=str, default="rgb_array")
+
+    # test
+    # parser.add_argument('--test_episode', type=int, default=1)
     return parser.parse_args()
 
 import torch
@@ -69,12 +116,11 @@ def count_parameters(model: torch.nn.Module):
 
 if __name__ == '__main__':
     parser = parse_args()
-    # configs_dict = get_configs(file_dir="config/CartPole-v1.yaml")
-    # configs_dict = get_configs(file_dir="config/CartPole-v1(12m).yaml")
-    configs_dict = get_configs(file_dir="config/CartPole-v1(50m).yaml")
+    configs_dict = get_configs(file_dir="config/myenv.yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
     configs = argparse.Namespace(**configs_dict)
 
+    REGISTRY_ENV[configs.env_name] = MyEnv
     set_seed(configs.seed)
     envs = make_envs(configs)
     Agent = DreamerV3Agent(config=configs, envs=envs)
