@@ -80,9 +80,9 @@ class DreamerV3Policy(Module):  # checked
         """po(obs, symlog_dist)"""
         po = SymLogDistribution(reconstructed_obs, dims=len(reconstructed_obs.shape[2:]))
         """pr(rews, two_hot_dist)"""
-        pr = TwoHotEncodingDistribution(self.world_model.reward_model(latent_states), dims=1)
+        pr = TwoHotEncodingDistribution(self.world_model.reward_predictor(latent_states), dims=1)
         """pc(cont, bernoulli_dist)"""
-        pc = Independent(BernoulliSafeMode(logits=self.world_model.continue_model(latent_states)), 1)
+        pc = Independent(BernoulliSafeMode(logits=self.world_model.discount_predictor(latent_states)), 1)
 
         # -> [seq, batch, 32, 32]
         priors_logits = priors_logits.view(*priors_logits.shape[:-1], self.stoch_size, self.disc_size)
@@ -123,8 +123,8 @@ class DreamerV3Policy(Module):  # checked
             actions = self.actor(imagined_latent_state.detach())[0]
             imagined_actions[i] = actions
         predicted_values = TwoHotEncodingDistribution(self.critic(imagined_trajectories), dims=1).mean
-        predicted_rewards = TwoHotEncodingDistribution(self.world_model.reward_model(imagined_trajectories), dims=1).mean
-        continues = Independent(BernoulliSafeMode(logits=self.world_model.continue_model(imagined_trajectories)), 1).mode
+        predicted_rewards = TwoHotEncodingDistribution(self.world_model.reward_predictor(imagined_trajectories), dims=1).mean
+        continues = Independent(BernoulliSafeMode(logits=self.world_model.discount_predictor(imagined_trajectories)), 1).mode
         true_continue = (1 - terms).flatten().reshape(1, -1, 1)  # continues: [16, 1024, 1]; true: [1, 1024, 1]
         continues = torch.cat((true_continue, continues[1:]))
         """seq_shift[1:]"""

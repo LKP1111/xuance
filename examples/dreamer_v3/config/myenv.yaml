@@ -150,18 +150,6 @@ world_model:
 #    unimix: 0.01
 #    # weight_init scale
 #    outscale: 1.0
-  # predictors
-  reward_predictor: # outscale: 0.0
-    bins: 255
-    layers: 1
-    dense_units: 64
-    # weight_init scale
-    outscale: 0.0
-  discount_predictor: # outscale: 1.0
-    layers: 1
-    dense_units: 64
-    # weight_init scale
-    outscale: 1.0
   recurrent_model:
     deter_size: 512
     layer_norm:
@@ -178,30 +166,33 @@ world_model:
     layer_norm:
       kw:
         eps: 0.001
-#  observation_model:
-#    cnn_channels_multiplier: 32
+
+  # predictors
+  reward_predictor: # outscale: 0.0
+    bins: 255
+    layers: 1
+    dense_units: 64
+    # weight_init scale
+    outscale: 0.0
+  discount_predictor: # outscale: 1.0
+    layers: 1
+    dense_units: 64
+    # weight_init scale
+    outscale: 1.0
+#  reward_model:
 #    mlp_layers: 2
-#    cnn_layer_norm:
-#      kw:
-#        eps: 0.001
-#    mlp_layer_norm:
+#    layer_norm:
 #      kw:
 #        eps: 0.001
 #    dense_units: 512
-  reward_model:
-    mlp_layers: 2
-    layer_norm:
-      kw:
-        eps: 0.001
-    dense_units: 512
-    bins: 255
-  discount_model:
-    learnable: true
-    mlp_layers: 2
-    layer_norm:
-      kw:
-        eps: 0.001
-    dense_units: 512
+#    bins: 255
+#  discount_model:
+#    learnable: true
+#    mlp_layers: 2
+#    layer_norm:
+#      kw:
+#        eps: 0.001
+#    dense_units: 512
 
 gamma: 0.996996996996997
 lmbda: 0.95

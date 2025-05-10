@@ -74,13 +74,18 @@ def parse_args():
 
     # 10k
     """
+    start_training: 64
     6.6it/s
+    add encoder decoder
     seed_1_2025_0511_001530(1e-4, 8e-5 400step ok)
-    
+    add reward_predictor, discount_predictor
+    seed_1_2025_0511_021155(1e-4,8e-5,ratio1 ok)
+    1e-4,8e-5,ratio0.5 ?
     """
+    # TODO rssm
     parser.add_argument("--running-steps", type=int, default=10_000)  # 10k
     parser.add_argument("--eval-interval", type=int, default=200)  # 50 logs
-    parser.add_argument("--replay-ratio", type=int, default=1)
+    parser.add_argument("--replay-ratio", type=int, default=0.5)
 
     parser.add_argument("--render", type=bool, default=True)
     parser.add_argument("--render_mode", type=str, default="rgb_array")
