@@ -83,6 +83,7 @@ def parse_args():
         seed_1_2025_0511_013803(1e-4,8e-5) -> 0 -> x -> 0
         seed_1_2025_0511_013904(4e-3,4e-5) xx
         
+        seed_1_2025_0511_151651(4e-5, ok)(rew_pred outscale -> 1,0)
     """
     parser.add_argument("--running-steps", type=int, default=10_000)  # 10k
     parser.add_argument("--eval-interval", type=int, default=200)  # 50 logs
