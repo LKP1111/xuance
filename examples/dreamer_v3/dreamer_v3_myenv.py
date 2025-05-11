@@ -81,6 +81,11 @@ def parse_args():
     add reward_predictor, discount_predictor
     seed_1_2025_0511_021155(1e-4,8e-5,ratio1 ok)
     seed_1_2025_0511_022653(1e-4,8e-5,ratio0.5 1.2k ok)
+    remove old init!!!
+    seed_1_2025_0511_131446(no_old_init x)
+    seed_1_2025_0511_134516(no_old_rew_predictor_init x)
+    seed_1_2025_0511_142503(rew_predictor outscale0.0 x, 1.0 ok)
+    seed_1_2025_0511_143825(rew_predictor outscale 1.0 ok)
     """
     # TODO rssm
     parser.add_argument("--running-steps", type=int, default=10_000)  # 10k

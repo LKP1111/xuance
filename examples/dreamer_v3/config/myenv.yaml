@@ -173,7 +173,7 @@ world_model:
     layers: 1
     dense_units: 64
     # weight_init scale
-    outscale: 0.0
+    outscale: 1.0
   discount_predictor: # outscale: 1.0
     layers: 1
     dense_units: 64

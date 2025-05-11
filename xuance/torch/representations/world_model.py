@@ -846,11 +846,11 @@ class DreamerV3WorldModel(nn.Module):
 
 
         world_model = WorldModel(
-            encoder.apply(init_weights),
+            encoder,
             rssm,
-            decoder.apply(init_weights),
-            reward_predictor.apply(init_weights),
-            discount_predictor.apply(init_weights),
+            decoder,
+            reward_predictor,
+            discount_predictor,
         )
 
         
