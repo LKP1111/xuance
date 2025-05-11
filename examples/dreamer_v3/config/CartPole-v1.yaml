@@ -52,14 +52,14 @@ actor:
   min_std: 0.1
   max_std: 1.0
   unimix: 0.01
-  outscale: 0.01
+  outscale: 1.0
 
 
 critic:
   layers: 3
   dense_units: 64
   bins: 255
-  outscale: 0.0
+  outscale: 1.0
 
 
 world_model:
@@ -113,7 +113,7 @@ world_model:
     layers: 1
     dense_units: 64
     # weight_init scale
-    outscale: 0.0
+    outscale: 1.0
   discount_predictor:  # outscale: 1.0
     layers: 1
     dense_units: 64
@@ -132,9 +132,9 @@ parallels: 1
 buffer_size: 1000000  # 1e6
 batch_size: 16
 seq_len: 64
-learning_rate_model: 0.004  # 4e-3
-learning_rate_actor: 0.0004  # 4e-4
-learning_rate_critic: 0.0004  # 4e-4
+learning_rate_model: 0.00004  # 4e-5
+learning_rate_actor: 0.00004  # 4e-5
+learning_rate_critic: 0.00004  # 4e-5
 
 replay_ratio: 0.5  # gradient_step / replay_step
 running_steps: 10000  # 10k

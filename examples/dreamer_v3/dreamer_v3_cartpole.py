@@ -33,20 +33,31 @@ def parse_args():
     (12m,4e-3,4e-5,ratio0.5,f32,kl_dyn0.5,cont_layer3) x
     (12m,1e-3,4e-5,ratio0.5,f32,kl_dyn0.5,cont_layer3) x
     seed_1_2025_0510_191214(12m,4e-3,4e-5,ratio1,f32) x
+    ---
+    seed_1_2025_0511_172747(1m,4e-5,ratio1,f32) 6k,10k->500 (ok)
     
-    1m, f32, 10.2it/s
+    Total params: 695,172
+    1m, f32, 10.5it/s, 1420MiB
     seed_1_2025_0509_022723(1m,4e-3,4e-5,ratio0.5,f32) (500) x
     seed_1_2025_0509_022751(1m,4e-3,4e-4,ratio0.5,f32) (500) x
+    seed_1_2025_0511_153620(1m,4e-5,ratio0.5,f32 rew_pred outscale 0.0 -> 1.0 (500) x)
+    seed_1_2025_0511_164705(1m,4e-5,ratio0.5,f32, critic outscale -> 1.0, x)
+    ---
+    seed_1_2025_0511_165928(1m,4e-5,ratio0.5,f32, actor outscale -> 1.0) 50k -> 500 (nearly ok)
+    seed_1_2025_0511_172540(1m,4e-5,ratio1,f32) (20k -> 500) (ok)
     
     50m, f32, 8956MiB
     seed_1_2025_0510_192244(50m,4e-3,4e-5,ratio0.5,f32) x
+    
+    
     """
-    # config1m
-    # Total params: 695,172;
-    # 1584MiB; 10k, 9.4it/s
     parser.add_argument("--running-steps", type=int, default=50_000)  # 10k
     parser.add_argument("--eval-interval", type=int, default=200)  # 50 logs
-    parser.add_argument("--replay-ratio", type=int, default=0.5)
+    parser.add_argument("--replay-ratio", type=int, default=1)
+
+    # render
+    parser.add_argument('--render', type=str, default=True)
+    parser.add_argument('--render-mode', type=str, default="rgb_array")
 
     # parallels & benchmark
     parser.add_argument('--parallels', type=int, default=1)
@@ -70,8 +81,8 @@ def count_parameters(model: torch.nn.Module):
 if __name__ == '__main__':
     parser = parse_args()
     # configs_dict = get_configs(file_dir="config/CartPole-v1.yaml")
-    # configs_dict = get_configs(file_dir="config/CartPole-v1(12m).yaml")
-    configs_dict = get_configs(file_dir="config/CartPole-v1(50m).yaml")
+    configs_dict = get_configs(file_dir="config/CartPole-v1(12m).yaml")
+    # configs_dict = get_configs(file_dir="config/CartPole-v1(50m).yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
     configs = argparse.Namespace(**configs_dict)
 
