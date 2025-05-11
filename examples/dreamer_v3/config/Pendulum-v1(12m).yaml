@@ -6,13 +6,13 @@ render: False
 render_mode: 'rgb_array' # Choices: 'human', 'rgb_array'.
 fps: 50
 test_mode: False
-device: "cpu"
+device: "cuda:0"
 distributed_training: False  # Whether to use multi-GPU for distributed training.
 master_port: '12355'  # The master port for current experiment when use distributed training.
 
 agent: "DreamerV3"
 env_name: "Classic Control"
-env_id: "CartPole-v1"
+env_id: "Pendulum-v1"
 env_seed: 1
 vectorize: "DummyVecEnv"
 representation: "DreamerV3WorldModel"
@@ -20,7 +20,7 @@ learner: "DreamerV3_Learner"
 policy: "DreamerV3Policy"
 runner: "DRL"
 
-# world_model & actor_critic start (12m config)
+# world_model & actor_critic start (1m config)
 harmony: False
 
 activation: 'silu'
@@ -152,5 +152,5 @@ rewnorm_range: 5
 test_steps: 10000
 eval_interval: 200
 test_episode: 3
-log_dir: "./logs/CartPole-v1/"
-model_dir: "./models/CartPole-v1/"
+log_dir: "./logs/Pendulum-v1/"
+model_dir: "./models/Pendulum-v1/"

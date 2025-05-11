@@ -20,7 +20,7 @@ learner: "DreamerV3_Learner"
 policy: "DreamerV3Policy"
 runner: "DRL"
 
-# world_model & actor_critic start (1m config)
+# world_model & actor_critic start (50m config)
 harmony: False
 
 activation: 'silu'

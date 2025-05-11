@@ -11,13 +11,17 @@ def parse_args():
     parser.add_argument("--env-id", type=str, default="Pendulum-v1")
     parser.add_argument("--log-dir", type=str, default="./logs/Pendulum-v1/")
     parser.add_argument("--model-dir", type=str, default="./models/Pendulum-v1/")
-    parser.add_argument("--device", type=str, default="cuda:1")
+    parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--harmony", type=bool, default=False)
 
     # 10k
     parser.add_argument("--running-steps", type=int, default=10_000)  # 10k
     parser.add_argument("--eval-interval", type=int, default=200)  # 50 logs
-    parser.add_argument("--replay-ratio", type=int, default=0.5)
+    parser.add_argument("--replay-ratio", type=int, default=1)
+
+    # render
+    parser.add_argument('--render', type=str, default=True)
+    parser.add_argument('--render-mode', type=str, default="rgb_array")
 
     # parallels & benchmark
     parser.add_argument('--parallels', type=int, default=1)
@@ -29,7 +33,7 @@ def parse_args():
 
 if __name__ == '__main__':
     parser = parse_args()
-    configs_dict = get_configs(file_dir="config/Pendulum-v1.yaml")
+    configs_dict = get_configs(file_dir="config/Pendulum-v1(12m).yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
     configs = argparse.Namespace(**configs_dict)
 
