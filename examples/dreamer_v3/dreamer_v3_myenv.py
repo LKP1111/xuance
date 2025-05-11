@@ -80,7 +80,7 @@ def parse_args():
     seed_1_2025_0511_001530(1e-4, 8e-5 400step ok)
     add reward_predictor, discount_predictor
     seed_1_2025_0511_021155(1e-4,8e-5,ratio1 ok)
-    1e-4,8e-5,ratio0.5 ?
+    seed_1_2025_0511_022653(1e-4,8e-5,ratio0.5 1.2k ok)
     """
     # TODO rssm
     parser.add_argument("--running-steps", type=int, default=10_000)  # 10k
