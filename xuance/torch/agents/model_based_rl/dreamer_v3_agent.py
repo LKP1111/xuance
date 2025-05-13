@@ -234,6 +234,8 @@ class DreamerV3Agent(OffPolicyAgent):
         # copy the total network for test
         test_player = deepcopy(self.train_player)
         test_player.init_states(num_envs=num_envs)
+
+        p_videos, p_episode_videos = [[] for _ in range(num_envs)], []  # predicted_images
         videos, episode_videos = [[] for _ in range(num_envs)], []
         current_episode, scores, best_score = 0, [], -np.inf
         obs, infos = test_envs.reset()
@@ -241,6 +243,11 @@ class DreamerV3Agent(OffPolicyAgent):
             images = test_envs.render(self.config.render_mode)
             for idx, img in enumerate(images):
                 videos[idx].append(img)
+            if self.config.pixel:
+                latent = torch.cat((test_player.stochastic_state, test_player.recurrent_state), -1)
+                p_images = self.policy.world_model.observation_model(latent).squeeze(0).detach().cpu().numpy()
+                for idx, p_img in enumerate(p_images):
+                    p_videos[idx].append(np.clip(((p_img + 0.5) * 255.0).astype(np.uint8), 0.0, 255.0))
         is_done = np.zeros(num_envs)
         while is_done.sum() < test_episodes:
             self.obs_rms.update(obs)
@@ -251,6 +258,11 @@ class DreamerV3Agent(OffPolicyAgent):
                 images = test_envs.render(self.config.render_mode)
                 for idx, img in enumerate(images):
                     videos[idx].append(img)
+                if self.config.pixel:
+                    latent = torch.cat((test_player.stochastic_state, test_player.recurrent_state), -1)
+                    p_images = self.policy.world_model.observation_model(latent).squeeze(0).detach().cpu().numpy()
+                    for idx, p_img in enumerate(p_images):
+                        p_videos[idx].append(np.clip(((p_img + 0.5) * 255.0).astype(np.uint8), 0.0, 255.0))
 
             obs = deepcopy(next_obs)
             done_idxes = []
@@ -264,9 +276,10 @@ class DreamerV3Agent(OffPolicyAgent):
                         if is_done[i] != 1:
                             is_done[i] = 1
                             scores.append(infos[i]["episode_score"])
-                        if best_score < infos[i]["episode_score"]:
-                            best_score = infos[i]["episode_score"]
-                            episode_videos = videos[i].copy()
+                            if best_score < infos[i]["episode_score"]:
+                                best_score = infos[i]["episode_score"]
+                                episode_videos = videos[i].copy()
+                                p_episode_videos = p_videos[i].copy()  # added
                         if self.config.test_mode:
                             print("Episode: %d, Score: %.2f" % (current_episode, infos[i]["episode_score"]))
             if len(done_idxes) > 0:
@@ -274,7 +287,10 @@ class DreamerV3Agent(OffPolicyAgent):
 
         if self.config.render_mode == "rgb_array" and self.render:
             # time, height, width, channel -> time, channel, height, width
-            videos_info = {"Videos_Test": np.array([episode_videos], dtype=np.uint8).transpose((0, 1, 4, 2, 3))}
+            videos_info = {
+                "Videos_Test/real": np.array([episode_videos], dtype=np.uint8).transpose((0, 1, 4, 2, 3)),
+                "Videos_Test/predicted": np.array([p_episode_videos], dtype=np.uint8)
+            }
             self.log_videos(info=videos_info, fps=self.fps, x_index=self.current_step)  # fps cannot work
 
         if self.config.test_mode:
