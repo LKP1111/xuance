@@ -389,17 +389,17 @@ class RSSM(nn.Module):
         action, embed = torch.zeros(16, 64, 2).to("cuda:1"), torch.zeros(16, 64, 4096).to("cuda:1")
         is_first = torch.zeros(16, 64, 1).float().to("cuda:1")
         deter, post, post_logits, prior, prior_logits = model.observe(deter, stoch, embed, action, is_first)
-        print('\n'.join(['observe'] + [f'{name}: {val.shape}' for name, val in 
-         zip('deter, post, post_logits, prior, prior_logits'.split(', '), 
+        print('\n'.join(['observe'] + [f'{name}: {val.shape}' for name, val in
+         zip('deter, post, post_logits, prior, prior_logits'.split(', '),
              [deter, post, post_logits, prior, prior_logits])]))
         deter, prior, prior_logits = model.imagine(deter, stoch, action)
         print(sum([torch.isnan(x).sum() for x in [deter, post, post_logits, prior, prior_logits]]))
 
-        print('\n'.join(['imagine'] + [f'{name}: {val.shape}' for name, val in 
-         zip('deter, prior, prior_logits'.split(', '), 
+        print('\n'.join(['imagine'] + [f'{name}: {val.shape}' for name, val in
+         zip('deter, prior, prior_logits'.split(', '),
              [ deter, prior, prior_logits])]))
         print(sum([torch.isnan(x).sum() for x in [deter, prior, prior_logits]]))
-        
+
 
 # # RSSM test (ok)
 # """
@@ -615,11 +615,17 @@ class DreamerV3WorldModel(nn.Module):
         reward_predictor = RewardPredictor(latent_size=latent_size, **wm_config.reward_predictor)
         discount_predictor = DiscountPredictor(latent_size=latent_size, **wm_config.discount_predictor)
 
-        actor = Actor(latent_size=latent_size, act_shape=act_shape, is_continuous=is_continuous, **config.actor)
-        critic = Critic(latent_size=latent_size, **config.critic)
+        actor = Actor(latent_size=latent_size, act_shape=act_shape, is_continuous=is_continuous, **config.actor)  #.apply(init_weights)
+        critic = Critic(latent_size=latent_size, **config.critic)  #.apply(init_weights)
         target_critic = deepcopy(critic)
 
-        return [encoder, decoder, rssm, reward_predictor, discount_predictor, actor, critic, target_critic]
+        # encoder = encoder.apply(init_weights)  # <- 先看看 conv 初始化, 之后再考虑简单 pixel 环境测试
+        # decoder = decoder.apply(init_weights)
+        # rssm = rssm.apply(init_weights)
+        # reward_predictor = reward_predictor.apply(init_weights)
+        # discount_predictor = discount_predictor.apply(init_weights)
+
+        return [encoder, decoder, rssm,  reward_predictor, discount_predictor, actor, critic, target_critic]
         
         
 # # test _build_model (ok)

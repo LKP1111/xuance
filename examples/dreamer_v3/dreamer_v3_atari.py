@@ -8,9 +8,9 @@ from xuance.torch.agents import DreamerV3Agent
 
 def parse_args():
     parser = argparse.ArgumentParser("Example of XuanCe: DreamerV3 for Atari.")
-    parser.add_argument("--env-id", type=str, default="ALE/MsPacman-v5")
-    parser.add_argument("--log-dir", type=str, default="./logs/MsPacman-v5/")
-    parser.add_argument("--model-dir", type=str, default="./models/MsPacman-v5/")
+    parser.add_argument("--env-id", type=str, default="ALE/Boxing-v5")
+    parser.add_argument("--log-dir", type=str, default="./logs/Boxing-v5/")
+    parser.add_argument("--model-dir", type=str, default="./models/Boxing-v5/")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--harmony", type=bool, default=False)
 
@@ -35,6 +35,12 @@ def parse_args():
     200m in sc, f32, torch 1.13.0
     Total params: 176,676,868
     310~340W; 22943MiB; 57~100%, 4.62it/s
+    
+    Boxing 
+    seed_1_2025_0512_053525(-> 0 x)
+    
+    myenv
+    TODO
     """
     parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
     parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
@@ -64,13 +70,13 @@ def count_parameters(model: torch.nn.Module):
         print(f"  {module_name:<16} {cnt:,}")
 
 if __name__ == '__main__':
-    import sys
-    print(sys.path)  # python path
-    sys.path.append('/home/lkp/projects/xc_official')
+    # import sys
+    # print(sys.path)  # python path
+    # sys.path.append('/home/lkp/projects/xc_official')
     
     parser = parse_args()
-    configs_dict = get_configs(file_dir="config/atari.yaml")
-    # configs_dict = get_configs(file_dir="config/atari(100m).yaml")
+    # configs_dict = get_configs(file_dir="config/atari.yaml")
+    configs_dict = get_configs(file_dir="config/atari(100m).yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
     configs = argparse.Namespace(**configs_dict)
 
