@@ -24,7 +24,7 @@ def parse_args():
     #   amp, bf16: 21074MiB, 3.45it/s;
     #   amp, f16: 23492MiB, f16, 6.8it/s
     """
-    100m in sc_lkp, f32
+    100m in sc_lkp, f32 torch 2.8.0
     Total params: 99,551,430; 
     250W; 15539MiB; 70~97%; 5.2it/s
     
@@ -38,10 +38,14 @@ def parse_args():
     
     Boxing 
     seed_1_2025_0512_053525(-> 0 x)
+    seed_1_2025_0514_020249(1e-3model,p_img x)
     
     myenv
-    TODO
+    
+    LaProp TODO
     """
+    parser.add_argument("--obs_type", type=str, default="rgb")
+    parser.add_argument("--buffer_size", type=str, default=100_000)
     parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
     parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
     parser.add_argument("--replay-ratio", type=int, default=0.25)
