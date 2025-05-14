@@ -135,6 +135,7 @@ seq_len: 64
 learning_rate_model: 0.0001  # 1e-4
 learning_rate_actor: 0.00004  # 4e-5
 learning_rate_critic: 0.00004  # 4e-5
+learning_rate: 0.00004  # 4e-5
 
 replay_ratio: 0.5  # gradient_step / replay_step
 running_steps: 10000  # 10k

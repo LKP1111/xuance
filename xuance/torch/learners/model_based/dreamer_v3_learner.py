@@ -39,11 +39,13 @@ class DreamerV3_Learner(Learner):
                 policy.harmonizer_s3.get_harmony()
             ]
         # optimizers
-        self.optimizer = {
-            'model': torch.optim.Adam(self.wm_params, config.learning_rate_model),
-            'actor': torch.optim.Adam(policy.actor.parameters(), config.learning_rate_actor),
-            'critic': torch.optim.Adam(policy.critic.parameters(), config.learning_rate_critic)
-        }
+        # self.optimizer = {
+        #     'model': torch.optim.Adam(self.wm_params, config.learning_rate_model),
+        #     'actor': torch.optim.Adam(policy.actor.parameters(), config.learning_rate_actor),
+        #     'critic': torch.optim.Adam(policy.critic.parameters(), config.learning_rate_critic)
+        # }
+        self.params = self.wm_params + list(policy.actor.parameters()) + list(policy.critic.parameters())
+        self.optimizer = DreamerV3Optimizer(params=self.params, lr=config.learning_rate)
         # AMP GradScaler for float16
         # self.scaler = GradScaler()
         self.gradient_step = 0
@@ -105,16 +107,18 @@ class DreamerV3_Learner(Learner):
             kl_loss *= self.kl_regularizer
         model_loss = (kl_loss + observation_loss + reward_loss + continue_loss).mean()
 
-        self.optimizer['model'].zero_grad()
+        self.optimizer.zero_grad()
         model_loss.backward()
+        self.optimizer.step()
+        # self.optimizer['model'].zero_grad()
+        # model_loss.backward()
         # self.scaler.scale(model_loss).backward()
         # self.scaler.unscale_(self.optimizer['model'])
-        adaptive_grad_clip(self.wm_params)
         # if self.config.world_model.clip_gradients is not None:
         #     torch.nn.utils.clip_grad_norm_(self.wm_params, self.config.world_model.clip_gradients)
         # self.scaler.step(self.optimizer['model'])
         # self.scaler.update()
-        self.optimizer['model'].step()
+        # self.optimizer['model'].step()
 
         """actor"""
         # with autocast(dtype=torch.float16):
@@ -122,16 +126,18 @@ class DreamerV3_Learner(Learner):
         objective, discount, entropy = out['for_actor']
         actor_loss = -torch.mean(discount.detach() * (objective + entropy))
 
-        self.optimizer['actor'].zero_grad()
+        self.optimizer.zero_grad()
         actor_loss.backward()
+        self.optimizer.step()
+        # self.optimizer['actor'].zero_grad()
+        # actor_loss.backward()
         # self.scaler.scale(actor_loss).backward()
         # self.scaler.unscale_(self.optimizer['actor'])
-        adaptive_grad_clip(self.policy.actor.parameters())
         # if self.config.actor.clip_gradients is not None:
         #     torch.nn.utils.clip_grad_norm_(self.policy.actor.parameters(), self.config.actor.clip_gradients)
         # self.scaler.step(self.optimizer['actor'])
         # self.scaler.update()
-        self.optimizer['actor'].step()
+        # self.optimizer['actor'].step()
 
         # with autocast(dtype=torch.float16):
         """critic"""
@@ -139,16 +145,18 @@ class DreamerV3_Learner(Learner):
         critic_loss = -qv.log_prob(lambda_values.detach()) -qv.log_prob(predicted_target_values.detach())
         critic_loss = torch.mean(discount.squeeze(-1).detach() * critic_loss)
 
-        self.optimizer['critic'].zero_grad()
+        self.optimizer.zero_grad()
         critic_loss.backward()
+        self.optimizer.step()
+        # self.optimizer['critic'].zero_grad()
+        # critic_loss.backward()
         # self.scaler.scale(critic_loss).backward()
         # self.scaler.unscale_(self.optimizer['critic'])
-        adaptive_grad_clip(self.policy.critic.parameters())
         # if self.config.critic.clip_gradients is not None:
         #     torch.nn.utils.clip_grad_norm_(self.policy.critic.parameters(), self.config.critic.clip_gradients)
         # self.scaler.step(self.optimizer['critic'])
         # self.scaler.update()
-        self.optimizer['critic'].step()
+        # self.optimizer['critic'].step()
 
         # TODO replay loss
 
@@ -179,35 +187,201 @@ class DreamerV3_Learner(Learner):
         return info
 
 
+
 import torch
+import torch.optim as optim
+import torch.nn as nn
+import math
+import re
 
+# 为了模拟，我们假设我们需要一些超参数
+# 这些参数来源于 DreamerV3 的 config 和 _make_opt 方法
+# opt:
+#   lr: 4e-5
+#   agc: 0.3
+#   eps: 1e-20
+#   beta1: 0.9
+#   beta2: 0.999
+#   momentum: True
+#   nesterov: False
+#   wd: 0.0
+#   wdregex: r'/kernel$'
+#   schedule: 'const' (我们将简化为固定学习率)
+#   warmup: 1000 (我们将简化为固定学习率)
+#   anneal: 0 (我们将简化为固定学习率)
 
-def adaptive_grad_clip(params, clip_coef: float = 0.3, eps: float = 1e-6):
+class DreamerV3Optimizer(optim.Optimizer):
     """
-    对 model 中每个参数张量执行 AGC：
-      如果 ||g||_2 > clip_coef * ||w||_2，则将 g 缩放到 (clip_coef * ||w||_2) / ||g||_2。
+    模仿 DreamerV3 定制 Optax 优化器链的 PyTorch 实现。
 
-    只对 dim>=2 的参数（通常是权重矩阵／卷积核）生效，bias 等一维参数保持不裁剪。
-
-    Args:
-      model:    包含参数的 nn.Module
-      clip_coef:  梯度上限相对于权重范数的比例 α
-      eps:       防止除零的最小值
+    链条顺序: AGC -> ScaleByRMS -> ScaleByMomentum -> AddWeightDecay -> Scale LR
     """
-    for param in params:
-        if param.grad is None:
-            continue
-        # 仅裁剪矩阵／卷积核等 dim>=2 的参数
-        if param.dim() < 2:
-            continue
+    def __init__(
+        self,
+        params,
+        lr=4e-5,
+        agc_clip=0.3, agc_pmin=1e-3,
+        beta1=0.9, beta2=0.999, eps=1e-20,
+        weight_decay=0.0, wd_regex=r'.*\.weight$', nesterov=False
+    ):
 
-        # 1. 计算权重和梯度的 L2 范数
-        w_norm = param.data.norm(2)
-        g_norm = param.grad.data.norm(2)
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= beta1 < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(beta1))
+        if not 0.0 <= beta2 < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(beta2))
+        if not 0.0 <= weight_decay:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
 
-        # 2. 计算该层允许的最大梯度
-        max_norm = torch.clamp(w_norm * clip_coef, min=eps)
+        defaults = dict(lr=lr, agc_clip=agc_clip, agc_pmin=agc_pmin,
+                        beta1=beta1, beta2=beta2, eps=eps,
+                        weight_decay=weight_decay, wd_regex=wd_regex,
+                        nesterov=nesterov)
+        super(DreamerV3Optimizer, self).__init__(params, defaults)
 
-        # 3. 若当前梯度超过阈值，则按比例缩放
-        if g_norm > max_norm:
-            param.grad.data.mul_(max_norm / (g_norm + 1e-16))
+        self.wd_pattern = re.compile(wd_regex)
+
+    def __setstate__(self, state):
+        super(DreamerV3Optimizer, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('nesterov', False)
+            # 重新编译正则，因为状态字典不能存储编译后的正则对象
+            self.wd_pattern = re.compile(group['wd_regex'])
+
+    def step(self, closure=None):
+        """
+        执行一个优化步骤。
+
+        Args:
+            closure (callable, optional): 计算损失并返回梯度的闭包。
+        """
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            # Get group hyperparameters
+            lr = group['lr']
+            agc_clip = group['agc_clip']
+            agc_pmin = group['agc_pmin']
+            beta1 = group['beta1']
+            beta2 = group['beta2']
+            eps = group['eps']
+            weight_decay = group['weight_decay']
+            nesterov = group['nesterov']
+
+            # Note: Learning rate scheduling (warmup/anneal) would typically be
+            # applied here by modifying the `lr` variable per step,
+            # managed by a separate scheduler object or internal step count.
+            # For simplicity, we use a fixed LR in this mock.
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad.data # Get the gradient data
+
+                # --- Apply transformations sequentially ---
+                """(ok)"""
+                # 1. Adaptive Gradient Clipping (AGC)
+                # Equivalent to optax.clip_by_agc
+                if agc_clip > 0:
+                    pnorm = torch.linalg.norm(p.data.flatten(), 2)
+                    gnorm = torch.linalg.norm(grad.flatten(), 2)
+                    max_norm = agc_clip * max(agc_pmin, pnorm.item())
+                    scale = gnorm / max_norm
+                    grad.mul_(torch.tensor(1.0, device=grad.device) / torch.max(torch.tensor(1.0, device=grad.device), scale))
+
+
+                # Get parameter state
+                state = self.state[p]
+
+                # Initialize state variables if needed
+                if 'step' not in state:
+                    state['step'] = 0
+                    state['m'] = torch.zeros_like(p.data, memory_format=torch.preserve_format) # Momentum buffer (like Adam m)
+                    state['v'] = torch.zeros_like(p.data, memory_format=torch.preserve_format) # RMS buffer (like Adam v)
+
+                state['step'] += 1
+                step = state['step']
+                m = state['m']
+                v = state['v']
+
+                bias_correction1 = 1 - beta1 ** step
+                bias_correction2 = 1 - beta2 ** step
+                """(ok)"""
+                # 2. Scale by RMS (Root Mean Square)
+                # Equivalent to optax.scale_by_rms (partial: updates v and scales grad)
+                # This calculates v and applies v-based scaling
+                # v_hat = [beta2 * v + (1 - beta2) * g^2] / (1 - beta2 ** step)
+                v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2) # Update v buffer
+                v_hat = v / bias_correction2                     # Apply bias correction
+                grad = grad / (v_hat.sqrt() + eps)               # Scale gradient by sqrt(v_hat)
+                """(ok)"""
+                # 3. Scale by Momentum (with Bias Correction)
+                # Equivalent to optax.scale_by_momentum (partial: updates m and returns m_hat)
+                # This calculates the momentum term m_hat based on the scaled grad
+                # m = [beta1 * m + (1 - beta1) * g_hat] / (1 - beta1 ** step)
+                m.mul_(beta1).add_(grad, alpha=1 - beta1) # Update m buffer
+
+                """TODO"""
+                # Let's follow Optax's scale_by_momentum.update_fn logic:
+                # optax.update_moment(updates, mu, beta, 1) for mu
+                # optax.bias_correction(mu, beta, step) for mu_hat if not nesterov
+                # optax.update_moment(updates, mu, beta, 1) for mu_nesterov
+                # optax.bias_correction(mu_nesterov, beta, step) for mu_hat if nesterov
+                # PyTorch Adam implements Nesterov as: grad = grad + beta1 * m_buffer (before updating m_buffer)
+                # Let's try to strictly follow Optax formulation for m_hat:
+                m_hat_no_nesterov = m / bias_correction1 # m_hat without nesterov
+                if nesterov:
+                     m_nesterov = m * beta1 + grad * (1-beta1) # This is how Optax's scale_by_momentum seems to compute the Nesterov-like intermediate
+                     m_hat = m_nesterov / bias_correction1 # Apply bias correction to the nesterov intermediate
+                else:
+                    m_hat = m_hat_no_nesterov # Standard momentum with bias correction
+
+                # The result after AGC, RMS scaling, and Momentum is the 'update direction'
+                update_direction = m_hat
+
+                """TODO"""
+                # 4. Add Weight Decay
+                # Equivalent to optax.add_decayed_weights.
+                # Optax adds wd * param to the *updates* (after other transformations but before LR).
+                # We apply it here to the 'update_direction'
+                # Check if weight decay should be applied to THIS parameter
+                apply_wd = weight_decay != 0
+                if group['wd_regex'] is not None:
+                     # Check if the parameter name matches the regex
+                     # In torch.optim.Optimizer, we don't have direct access to parameter names here within the loop.
+                     # A common workaround is to pass names or split parameters into groups beforehand.
+                     # For this mock, we'll assume wd_regex is handled by the group structure
+                     # (e.g., creating groups where only 'kernel' or 'weight' params have wd > 0)
+                     # Or, more directly in torch, filter `params` list in __init__ based on name & regex.
+                     # Let's assume the group['params'] already filtered for wd.
+                     pass # If filtering is done upstream or via specific groups
+
+                # Following Optax: updates = f_N(...f_1(grads)...) + wd * param
+                # Here f_1 to f_3 are AGC, RMS, Momentum. Let update_intermediate = f_3(f_2(f_1(grad))) = update_direction
+                # Then update_with_wd = update_intermediate + weight_decay * p.data
+                # This is the L2 regularization gradient that is added to the primary update direction.
+                if apply_wd: # We assume apply_wd check is simplified or done via groups
+                    update_with_wd = update_direction.add(p.data, alpha=weight_decay)
+                else:
+                    update_with_wd = update_direction
+
+
+                # 5. Scale by Learning Rate
+                # Equivalent to optax.scale_by_learning_rate
+                # updates = lr * update_with_wd
+                updates = update_with_wd.mul(lr)
+
+
+                # Finally, apply updates to the parameter
+                # p.data = p.data - updates OR p.data.add_(updates, alpha=-1)
+                p.data.add_(updates, alpha=-1)
+
+        return loss # Return the computed loss if closure was provided
+
