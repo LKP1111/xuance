@@ -140,10 +140,11 @@ seq_len: 64
 learning_rate_model: 0.00004  # 4e-5
 learning_rate_actor: 0.00004  # 4e-5
 learning_rate_critic: 0.00004  # 4e-5
+learning_rate: 0.00004  # 4e-5
 
 replay_ratio: 0.25  # gradient_step / replay_step
 running_steps: 100000  # 100k
-start_training: 1024
+start_training: 64
 
 use_grad_clip: False  # gradient normalization
 clip_type: 1

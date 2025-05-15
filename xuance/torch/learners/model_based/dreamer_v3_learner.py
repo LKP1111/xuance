@@ -44,8 +44,9 @@ class DreamerV3_Learner(Learner):
         #     'actor': torch.optim.Adam(policy.actor.parameters(), config.learning_rate_actor),
         #     'critic': torch.optim.Adam(policy.critic.parameters(), config.learning_rate_critic)
         # }
-        self.params = self.wm_params + list(policy.actor.parameters()) + list(policy.critic.parameters())
-        self.optimizer = DreamerV3Optimizer(params=self.params, lr=config.learning_rate)
+        self.optimizer1 = DreamerV3Optimizer(params=self.wm_params, lr=config.learning_rate)
+        self.optimizer2 = DreamerV3Optimizer(params=policy.actor.parameters(), lr=config.learning_rate)
+        self.optimizer3 = DreamerV3Optimizer(params=policy.critic.parameters(), lr=config.learning_rate)
         # AMP GradScaler for float16
         # self.scaler = GradScaler()
         self.gradient_step = 0
@@ -107,9 +108,9 @@ class DreamerV3_Learner(Learner):
             kl_loss *= self.kl_regularizer
         model_loss = (kl_loss + observation_loss + reward_loss + continue_loss).mean()
 
-        self.optimizer.zero_grad()
+        self.optimizer1.zero_grad()
         model_loss.backward()
-        self.optimizer.step()
+        self.optimizer1.step()
         # self.optimizer['model'].zero_grad()
         # model_loss.backward()
         # self.scaler.scale(model_loss).backward()
@@ -126,9 +127,9 @@ class DreamerV3_Learner(Learner):
         objective, discount, entropy = out['for_actor']
         actor_loss = -torch.mean(discount.detach() * (objective + entropy))
 
-        self.optimizer.zero_grad()
+        self.optimizer2.zero_grad()
         actor_loss.backward()
-        self.optimizer.step()
+        self.optimizer2.step()
         # self.optimizer['actor'].zero_grad()
         # actor_loss.backward()
         # self.scaler.scale(actor_loss).backward()
@@ -145,9 +146,9 @@ class DreamerV3_Learner(Learner):
         critic_loss = -qv.log_prob(lambda_values.detach()) -qv.log_prob(predicted_target_values.detach())
         critic_loss = torch.mean(discount.squeeze(-1).detach() * critic_loss)
 
-        self.optimizer.zero_grad()
+        self.optimizer3.zero_grad()
         critic_loss.backward()
-        self.optimizer.step()
+        self.optimizer3.step()
         # self.optimizer['critic'].zero_grad()
         # critic_loss.backward()
         # self.scaler.scale(critic_loss).backward()
@@ -193,29 +194,8 @@ import torch.optim as optim
 import torch.nn as nn
 import math
 import re
-
-# 为了模拟，我们假设我们需要一些超参数
-# 这些参数来源于 DreamerV3 的 config 和 _make_opt 方法
-# opt:
-#   lr: 4e-5
-#   agc: 0.3
-#   eps: 1e-20
-#   beta1: 0.9
-#   beta2: 0.999
-#   momentum: True
-#   nesterov: False
-#   wd: 0.0
-#   wdregex: r'/kernel$'
-#   schedule: 'const' (我们将简化为固定学习率)
-#   warmup: 1000 (我们将简化为固定学习率)
-#   anneal: 0 (我们将简化为固定学习率)
-
+# TODO
 class DreamerV3Optimizer(optim.Optimizer):
-    """
-    模仿 DreamerV3 定制 Optax 优化器链的 PyTorch 实现。
-
-    链条顺序: AGC -> ScaleByRMS -> ScaleByMomentum -> AddWeightDecay -> Scale LR
-    """
     def __init__(
         self,
         params,

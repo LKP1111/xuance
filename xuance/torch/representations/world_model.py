@@ -202,17 +202,8 @@ class Decoder(nn.Module):
             # stoch -> linear -> shape of conv_in
             x1 = self.l(x1).view(-1, *self.shape)
             x = self.norm_act(x0 + x1)
-            # convt
+            # conv
             obs = self.model(x)
-            # for layer in self.model:
-            #     if isinstance(layer, nn.UpsamplingNearest2d):
-            #         x = x.to(dtype=torch.float32)
-            #         with autocast(dtype=torch.float32):
-            #             x = layer(x)
-            #         x = x.to(dtype=torch.bfloat16)
-            #     else:
-            #         x = layer(x)
-            # obs = x
         return obs.reshape(*batch_shape, *self.obs_shape)  # [~, *obs_shape]
 
 # # decoder test (ok)

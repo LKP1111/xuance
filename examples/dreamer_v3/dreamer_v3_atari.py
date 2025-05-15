@@ -8,9 +8,9 @@ from xuance.torch.agents import DreamerV3Agent
 
 def parse_args():
     parser = argparse.ArgumentParser("Example of XuanCe: DreamerV3 for Atari.")
-    parser.add_argument("--env-id", type=str, default="ALE/Boxing-v5")
-    parser.add_argument("--log-dir", type=str, default="./logs/Boxing-v5/")
-    parser.add_argument("--model-dir", type=str, default="./models/Boxing-v5/")
+    parser.add_argument("--env-id", type=str, default="ALE/Pong-v5")
+    parser.add_argument("--log-dir", type=str, default="./logs/Pong-v5/")
+    parser.add_argument("--model-dir", type=str, default="./models/Pong-v5/")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--harmony", type=bool, default=False)
 
@@ -41,8 +41,26 @@ def parse_args():
     seed_1_2025_0514_020249(1e-3model,p_img x)
     
     myenv
-    
-    LaProp TODO
+    ------
+    in sc
+    LaProp 
+    config200m, f32 x 
+    config100m, 23G 
+
+    Boxing
+    Adam 200m, conv then unsampling: 78, p_img ?
+    LaProp 100m: 90, p_img ok
+
+    p_img ok
+    Adam 100m: 23G
+    LaProp 100m, conv then unsampling: 19G
+    3LaProp 100m: 23G
+
+    in sc_lkp
+    Pong
+    Total params: 44,401,290
+    13152MiB, 6.4it/s
+    config50m,best 0
     """
     parser.add_argument("--obs_type", type=str, default="rgb")
     parser.add_argument("--buffer_size", type=str, default=100_000)
@@ -80,7 +98,8 @@ if __name__ == '__main__':
     
     parser = parse_args()
     # configs_dict = get_configs(file_dir="config/atari.yaml")
-    configs_dict = get_configs(file_dir="config/atari(100m).yaml")
+    configs_dict = get_configs(file_dir="config/atari(50m).yaml")
+    # configs_dict = get_configs(file_dir="config/atari(100m).yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
     configs = argparse.Namespace(**configs_dict)
 

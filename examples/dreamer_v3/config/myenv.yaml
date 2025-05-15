@@ -139,7 +139,7 @@ learning_rate: 0.00004  # 4e-5
 
 replay_ratio: 0.5  # gradient_step / replay_step
 running_steps: 10000  # 10k
-start_training: 1024
+start_training: 64
 
 use_grad_clip: False  # gradient normalization
 clip_type: 1
