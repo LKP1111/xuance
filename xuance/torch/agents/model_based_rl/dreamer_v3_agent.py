@@ -276,7 +276,7 @@ class DreamerV3Agent(OffPolicyAgent):
             if self.config.pixel:
                 p_images = self.policy.decoder(deter, stoch).detach().cpu().numpy()
                 for idx, p_img in enumerate(p_images):
-                    p_videos[idx].append(np.clip(((p_img + 0.5) * 255.0).astype(np.uint8), 0.0, 255.0))
+                    p_videos[idx].append(np.clip((p_img * 255.0).astype(np.uint8), 0.0, 255.0))
 
         is_done = np.zeros(num_envs)
         while is_done.sum() < test_episodes:
@@ -292,7 +292,7 @@ class DreamerV3Agent(OffPolicyAgent):
                 if self.config.pixel:
                     p_images = self.policy.decoder(deter, stoch).detach().cpu().numpy()
                     for idx, p_img in enumerate(p_images):
-                        p_videos[idx].append(np.clip(((p_img + 0.5) * 255.0).astype(np.uint8), 0.0, 255.0))
+                        p_videos[idx].append(np.clip((p_img * 255.0).astype(np.uint8), 0.0, 255.0))
             obs = deepcopy(next_obs)
             done_idxes = []
             for i in range(num_envs):

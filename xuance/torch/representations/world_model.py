@@ -204,6 +204,7 @@ class Decoder(nn.Module):
             x = self.norm_act(x0 + x1)
             # conv
             obs = self.model(x)
+            obs = F.sigmoid(obs)
         return obs.reshape(*batch_shape, *self.obs_shape)  # [~, *obs_shape]
 
 # # decoder test (ok)

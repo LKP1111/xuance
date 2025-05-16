@@ -74,7 +74,7 @@ class DreamerV3_Learner(Learner):
         po, pr, pc, priors_logits, posts_logits, deters, posts = \
             self.policy.model_forward(obs, acts, is_first)
         """model"""
-        observation_loss = -po.log_prob(obs)
+        observation_loss = -po.log_prob(obs + 0.5)
         reward_loss = -pr.log_prob(rews)
         # KL balancing
         dyn_loss = kl_div(  # prior -> post
