@@ -14,6 +14,21 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--harmony", type=bool, default=True)
 
+    """
+    S: 3460MiB
+    Total params: 15,684,737
+      encoder          689,600
+      rssm             5,777,920
+      observation_model 6,984,641
+      reward_model     1,181,439
+      continue_model   1,051,137
+    actor Total params: 1,052,676
+      model            1,050,624
+      mlp_heads        2,052
+    critic Total params: 1,181,439
+      _model           1,181,439
+    """
+
     # atari100k, ratio=1, gradient_step=100k
     parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
     parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
@@ -25,6 +40,18 @@ def parse_args():
     parser.add_argument("--benchmark", type=int, default=1)
     return parser.parse_args()
 
+import torch
+from collections import defaultdict
+def count_parameters(model: torch.nn.Module):
+    param_counts = defaultdict(int)
+    for name, param in model.named_parameters():
+        # name like 'encoder.conv1.weight' -> top_name='encoder'
+        top_name = name.split('.')[0]
+        param_counts[top_name] += param.numel()
+    total = sum(param_counts.values())
+    print(f"Total params: {total:,}")
+    for module_name, cnt in param_counts.items():
+        print(f"  {module_name:<16} {cnt:,}")
 
 if __name__ == '__main__':
     # print(sys.path)  # python path
@@ -36,6 +63,10 @@ if __name__ == '__main__':
     set_seed(configs.seed)
     envs = make_envs(configs)
     Agent = DreamerV3Agent(config=configs, envs=envs)
+
+    count_parameters(Agent.policy.world_model)
+    count_parameters(Agent.policy.actor)
+    count_parameters(Agent.policy.critic)
 
     train_information = {"Deep learning toolbox": configs.dl_toolbox,
                          "Calculating device": configs.device,
