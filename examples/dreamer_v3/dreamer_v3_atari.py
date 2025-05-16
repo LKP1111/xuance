@@ -61,6 +61,11 @@ def parse_args():
     Total params: 44,401,290
     13152MiB, 6.4it/s
     config50m,best 0
+    ------- 
+    cur
+    Total params: 44,401,287
+    11959MiB
+    config50m, ?
     """
     parser.add_argument("--obs_type", type=str, default="rgb")
     parser.add_argument("--buffer_size", type=str, default=100_000)

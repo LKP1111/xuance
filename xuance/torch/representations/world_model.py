@@ -175,7 +175,7 @@ class Decoder(nn.Module):
             in_channel = self.shape[0]
             for d in reversed([obs_shape[0],] + depths[:-1]):
                 # v3_official_new: x = x.repeat(2, -2).repeat(2, -3)
-                li.append(nn.UpsamplingNearest2d(scale_factor=2))  # unsampling last 2 dimensions
+                li.append(nn.UpsamplingNearest2d(scale_factor=2))  # upsampling last 2 dimensions
                 li.append(nn.Conv2d(in_channel, d, 
                                     kernel_size=kernel, 
                                     stride=stride,
@@ -183,7 +183,7 @@ class Decoder(nn.Module):
                 li.append(RMSNormChannelLast(d))
                 li.append(nn.SiLU())
                 in_channel = d
-        self.model = nn.Sequential(*li)
+        self.model = nn.Sequential(*li[:-2])  # remove last norm, act
         # wb_init
         self.apply(trunc_normal_init_weights(scale=outscale))
 
