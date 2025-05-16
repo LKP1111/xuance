@@ -12,12 +12,17 @@ def parse_args():
     parser.add_argument("--log-dir", type=str, default="./logs/Breakout-v5/")
     parser.add_argument("--model-dir", type=str, default="./models/Breakout-v5/")
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--harmony", type=bool, default=True)
+    parser.add_argument("--harmony", type=bool, default=False)
 
     # atari100k, ratio=1, gradient_step=100k
     parser.add_argument("--running-steps", type=int, default=100_000)  # 100k
     parser.add_argument("--eval-interval", type=int, default=2_000)  # 50 logs
     parser.add_argument("--replay-ratio", type=int, default=1)
+
+    # render
+    parser.add_argument("--obs-type", type=str, default="rgb")
+    parser.add_argument("--render", type=bool, default=True)
+    parser.add_argument("--render-mode", type=str, default="rgb_array")
 
     # parallels & benchmark
     parser.add_argument('--parallels', type=int, default=1)
