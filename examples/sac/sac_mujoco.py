@@ -9,7 +9,7 @@ from xuance.torch.agents import SAC_Agent
 
 def parse_args():
     parser = argparse.ArgumentParser("Example of XuanCe: SAC for MuJoCo.")
-    parser.add_argument("--env-id", type=str, default="InvertedPendulum-v4")
+    parser.add_argument("--env-id", type=str, default="HalfCheetah-v5")
     parser.add_argument("--test", type=int, default=0)
     parser.add_argument("--benchmark", type=int, default=1)
 

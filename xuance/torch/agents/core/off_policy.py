@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 from tqdm import tqdm
 from copy import deepcopy
@@ -46,6 +48,11 @@ class OffPolicyAgent(Agent):
 
         self.buffer_size = self.config.buffer_size
         self.batch_size = self.config.batch_size
+
+        self.train_time = 0
+        self.sample_time = 0
+        self.test_time = 0
+        self.start_time = time.time()
 
     def _build_memory(self, auxiliary_info_shape=None):
         self.atari = self.config.env_name == "Atari"
@@ -117,8 +124,12 @@ class OffPolicyAgent(Agent):
     def train_epochs(self, n_epochs=1):
         train_info = {}
         for _ in range(n_epochs):
+            sample_start = time.time()
             samples = self.memory.sample()
+            self.sample_time += time.time() - sample_start
+            train_start = time.time()
             train_info = self.learner.update(**samples)
+            self.train_time += time.time() - train_start
         train_info["epsilon-greedy"] = self.e_greedy
         train_info["noise_scale"] = self.noise_scale
         return train_info
@@ -139,6 +150,7 @@ class OffPolicyAgent(Agent):
                                         train_steps=train_steps)
 
             self.memory.store(obs, acts, self._process_reward(rewards), terminals, self._process_observation(next_obs))
+
             if self.current_step > self.start_training and self.current_step % self.training_frequency == 0:
                 update_info = self.train_epochs(n_epochs=self.n_epochs)
                 self.log_infos(update_info, self.current_step)
@@ -167,7 +179,11 @@ class OffPolicyAgent(Agent):
                         else:
                             episode_info = {
                                 f"Episode-Steps/rank_{self.rank}": {f"env-{i}": infos[i]["episode_step"]},
-                                f"Train-Episode-Rewards/rank_{self.rank}": {f"env-{i}": infos[i]["episode_score"]}
+                                f"Train-Episode-Rewards/rank_{self.rank}": {f"env-{i}": infos[i]["episode_score"]},
+                                "Time/policy_per_sec": int(self.current_step / (time.time() - self.start_time)),
+                                "Time/train_time": self.train_time,
+                                "Time/sample_time": self.sample_time,
+                                "Time/test_time": self.test_time
                             }
                         self.log_infos(episode_info, self.current_step)
                         train_info.update(episode_info)
@@ -184,6 +200,7 @@ class OffPolicyAgent(Agent):
         return train_info
 
     def test(self, env_fn, test_episodes: int) -> list:
+        test_start = time.time()
         test_envs = env_fn()
         num_envs = test_envs.num_envs
         videos, episode_videos, images = [[] for _ in range(num_envs)], [], None
@@ -246,6 +263,6 @@ class OffPolicyAgent(Agent):
                                   scores=scores, best_score=best_score)
 
         test_envs.close()
-
+        self.test_time += time.time() - test_start
         return scores
 
