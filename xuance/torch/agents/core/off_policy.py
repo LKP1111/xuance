@@ -49,6 +49,7 @@ class OffPolicyAgent(Agent):
         self.buffer_size = self.config.buffer_size
         self.batch_size = self.config.batch_size
 
+        self.interact_time = 0
         self.train_time = 0
         self.sample_time = 0
         self.test_time = 0
@@ -140,9 +141,11 @@ class OffPolicyAgent(Agent):
         for _ in tqdm(range(train_steps)):
             self.obs_rms.update(obs)
             obs = self._process_observation(obs)
+            interact_start = time.time()
             policy_out = self.action(obs, test_mode=False)
             acts = policy_out['actions']
             next_obs, rewards, terminals, truncations, infos = self.envs.step(acts)
+            self.interact_time += time.time() - interact_start
 
             self.callback.on_train_step(self.current_step, envs=self.envs, policy=self.policy,
                                         obs=obs, policy_out=policy_out, acts=acts, next_obs=next_obs, rewards=rewards,
@@ -180,9 +183,10 @@ class OffPolicyAgent(Agent):
                             episode_info = {
                                 f"Episode-Steps/rank_{self.rank}": {f"env-{i}": infos[i]["episode_step"]},
                                 f"Train-Episode-Rewards/rank_{self.rank}": {f"env-{i}": infos[i]["episode_score"]},
-                                "Time/policy_per_sec": int(self.current_step / (time.time() - self.start_time)),
-                                "Time/train_time": self.train_time,
+                                "Time/StepsPerSeconds": int(self.current_step / (time.time() - self.start_time)),
+                                "Time/interact_time": self.interact_time,
                                 "Time/sample_time": self.sample_time,
+                                "Time/train_time": self.train_time,
                                 "Time/test_time": self.test_time
                             }
                         self.log_infos(episode_info, self.current_step)
