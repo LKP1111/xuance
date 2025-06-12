@@ -17,6 +17,10 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    import cProfile, pstats
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     parser = parse_args()
     configs_dict = get_configs(file_dir="sac_configs/sac_mujoco.yaml")
     configs_dict = recursive_dict_update(configs_dict, parser.__dict__)
@@ -80,3 +84,8 @@ if __name__ == "__main__":
             print("Finish training!")
 
     Agent.finish()
+
+    profiler.disable()
+
+    stats = pstats.Stats(profiler).sort_stats('cumtime') # 按累计时间排序
+    stats.print_stats(20) # 打印耗时最多的前20个函数

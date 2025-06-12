@@ -154,7 +154,7 @@ class OffPolicyAgent(Agent):
 
             self.memory.store(obs, acts, self._process_reward(rewards), terminals, self._process_observation(next_obs))
 
-            if self.current_step > self.start_training and self.current_step % self.training_frequency == 0:
+            if self.current_step > self.start_training and self.current_step % self.training_frequency == 0:  # <- wrong logic in parallel env
                 update_info = self.train_epochs(n_epochs=self.n_epochs)
                 self.log_infos(update_info, self.current_step)
                 train_info.update(update_info)
